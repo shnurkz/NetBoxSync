@@ -166,18 +166,41 @@ public class VmwareProvider : IVirtualizationProvider
         if (ethData.ValueKind == JsonValueKind.Array) ethItems = ethData.EnumerateArray();
         else if (ethData.ValueKind == JsonValueKind.Object) ethItems = ethData.EnumerateObject().Select(p => p.Value);
 
+        var nicIds = new List<string>();
         foreach (var eth in ethItems)
         {
-          if (eth.ValueKind == JsonValueKind.Object && eth.TryGetProperty("backing", out var backing) && backing.ValueKind == JsonValueKind.Object &&
-              backing.TryGetProperty("network", out var netProp) && netProp.ValueKind == JsonValueKind.String)
+          if (eth.ValueKind == JsonValueKind.String)
           {
-             string netId = netProp.GetString()!;
-             if (netDict.TryGetValue(netId, out var netName))
-             {
-                 asset.PrimaryVlan = netName;
-                 break;
-             }
+             nicIds.Add(eth.GetString()!);
           }
+          else if (eth.ValueKind == JsonValueKind.Object && eth.TryGetProperty("nic", out var nicProp) && nicProp.ValueKind == JsonValueKind.String)
+          {
+             nicIds.Add(nicProp.GetString()!);
+          }
+          else if (eth.ValueKind == JsonValueKind.Object && eth.TryGetProperty("key", out var keyProp) && keyProp.ValueKind == JsonValueKind.String)
+          {
+             nicIds.Add(keyProp.GetString()!);
+          }
+        }
+
+        foreach (var nicId in nicIds)
+        {
+           var nicResp = await _client.GetAsync($"{_baseUrl}/api/vcenter/vm/{vmId}/hardware/ethernet/{nicId}");
+           if (nicResp.IsSuccessStatusCode)
+           {
+               var nicJson = await nicResp.Content.ReadFromJsonAsync<JsonElement>();
+               var nicData = nicJson.ValueKind == JsonValueKind.Object && nicJson.TryGetProperty("value", out var nv) ? nv : nicJson;
+               if (nicData.ValueKind == JsonValueKind.Object && nicData.TryGetProperty("backing", out var backing) && backing.ValueKind == JsonValueKind.Object &&
+                   backing.TryGetProperty("network", out var netProp) && netProp.ValueKind == JsonValueKind.String)
+               {
+                  string netId = netProp.GetString()!;
+                  if (netDict.TryGetValue(netId, out var netName))
+                  {
+                      asset.PrimaryVlan = netName;
+                      break;
+                  }
+               }
+           }
         }
       }
 
@@ -188,8 +211,17 @@ public class VmwareProvider : IVirtualizationProvider
         {
           var json = await idResp.Content.ReadFromJsonAsync<JsonElement>();
           JsonElement data = json.ValueKind == JsonValueKind.Object && json.TryGetProperty("value", out var v) ? v : json;
-          if (data.ValueKind == JsonValueKind.Object && data.TryGetProperty("full_name", out var fn) && fn.ValueKind == JsonValueKind.String) 
-              asset.FullOsName = fn.GetString() ?? "";
+          if (data.ValueKind == JsonValueKind.Object && data.TryGetProperty("full_name", out var fn)) 
+          {
+              if (fn.ValueKind == JsonValueKind.String)
+              {
+                  asset.FullOsName = fn.GetString() ?? "";
+              }
+              else if (fn.ValueKind == JsonValueKind.Object && fn.TryGetProperty("default_message", out var dm) && dm.ValueKind == JsonValueKind.String)
+              {
+                  asset.FullOsName = dm.GetString() ?? "";
+              }
+          }
         }
 
         if (string.IsNullOrEmpty(asset.FullOsName) || asset.FullOsName.Equals("Unknown", StringComparison.OrdinalIgnoreCase))
@@ -223,34 +255,6 @@ public class VmwareProvider : IVirtualizationProvider
             }
           }
         }
-
-        try
-        {
-          var appsResp = await _client.GetAsync($"{_baseUrl}/api/vcenter/vm/{vmId}/guest/local-apps");
-          if (appsResp.IsSuccessStatusCode)
-          {
-            var appsJson = await appsResp.Content.ReadFromJsonAsync<JsonElement>();
-            JsonElement appsData = appsJson.ValueKind == JsonValueKind.Object && appsJson.TryGetProperty("value", out var av) ? av : appsJson;
-            
-            IEnumerable<JsonElement> appsItems = Enumerable.Empty<JsonElement>();
-            if (appsData.ValueKind == JsonValueKind.Array) appsItems = appsData.EnumerateArray();
-            else if (appsData.ValueKind == JsonValueKind.Object) appsItems = appsData.EnumerateObject().Select(p => p.Value);
-
-            var apps = appsItems
-               .Where(a => a.ValueKind == JsonValueKind.Object && a.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String)
-               .Select(a =>
-               {
-                   string name = a.GetProperty("name").GetString()!;
-                   string version = a.TryGetProperty("version", out var ver) && ver.ValueKind == JsonValueKind.String ? ver.GetString() ?? "" : "";
-                   return string.IsNullOrEmpty(version) ? name : $"{name} {version}";
-               })
-               .Take(15)
-               .ToList();
-             
-            asset.SoftwareList.AddRange(apps);
-          }
-        }
-        catch (Exception ex) { Console.WriteLine($"\n      [!] Ошибка VMware Guest Local-Apps API: {ex.Message}"); }
       }
       else
       {

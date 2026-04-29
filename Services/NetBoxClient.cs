@@ -50,12 +50,6 @@ public class NetBoxClient
         foreach (var ip in filteredIps) sb.AppendLine($"- {ip}");
       }
 
-      if (vm.SoftwareList != null && vm.SoftwareList.Any())
-      {
-        sb.AppendLine("\n**Установленное ПО (Inventory):**");
-        foreach (var app in vm.SoftwareList) sb.AppendLine($"- {app}");
-      }
-
       string endpoint = "/virtualization/virtual-machines/";
       HttpMethod method = HttpMethod.Post;
       if (cache.TryGetValue(vm.Name, out int id))
