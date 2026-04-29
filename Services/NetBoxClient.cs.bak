@@ -1,0 +1,560 @@
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using NetBoxSync.Models;
+
+namespace NetBoxSync.Services;
+
+public class NetBoxClient
+{
+  private readonly HttpClient _client;
+  private readonly string _baseUrl;
+  private readonly HashSet<string> _verifiedTags = new();
+
+  public NetBoxClient(string url, string token)
+  {
+    _baseUrl = url.TrimEnd('/');
+    var handler = new HttpClientHandler
+    {
+      ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+    };
+    _client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
+    _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Token", token.Trim());
+  }
+
+  private async Task EnsureTagExistsAsync(string tagName)
+  {
+    if (_verifiedTags.Contains(tagName)) return;
+
+    var res = await _client.GetAsync($"{_baseUrl}/extras/tags/?name={Uri.EscapeDataString(tagName)}");
+    if (res.IsSuccessStatusCode)
+    {
+      var json = await res.Content.ReadFromJsonAsync<JsonElement>();
+      if (json.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+      {
+        _verifiedTags.Add(tagName);
+        return;
+      }
+    }
+
+    var payload = new { name = tagName, slug = GenerateSlug(tagName) };
+    var content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+    var postRes = await _client.PostAsync($"{_baseUrl}/extras/tags/", content);
+
+    if (postRes.IsSuccessStatusCode) _verifiedTags.Add(tagName);
+  }
+    };
+    _client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
+    _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Token", token.Trim());
+  }
+
+  public async Task EnsureDevicesExistAsync(List<HostAsset> hosts, int siteId, int roleId)
+  {
+    Console.WriteLine("\n--- [NetBox] Инвентаризация физических серверов ---");
+
+    foreach (var host in hosts)
+    {
+      if (string.IsNullOrEmpty(host.Name) || host.Name == "unknown" || host.Name.Contains("vmware-host")) continue;
+
+      try
+      {
+        int vendorId = await GetOrCreateManufacturerAsync(host.Vendor);
+        int deviceTypeId = await GetOrCreateDeviceTypeAsync(vendorId, host.Model, host.PartNumber);
+        await AddOrUpdateDeviceAsync(host, siteId, roleId, deviceTypeId);
+      }
+      catch (Exception ex)
+      {
+        Console.WriteLine($"[!] Ошибка обработки хоста {host.Name}: {ex.Message}");
+      }
+    }
+  }
+
+  private async Task<int> GetOrCreateDeviceTypeAsync(int vendorId, string modelName, string partNumber = "")
+  {
+    string slug = GenerateSlug(modelName);
+    var res = await _client.GetAsync($"{_baseUrl}/dcim/device-types/?model={Uri.EscapeDataString(modelName)}");
+
+    if (res.IsSuccessStatusCode)
+    {
+      var json = await res.Content.ReadFromJsonAsync<JsonElement>();
+      if (json.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+        return results[0].GetProperty("id").GetInt32();
+    }
+
+    var payload = new Dictionary<string, object>
+    {
+        { "manufacturer", vendorId },
+        { "model", modelName },
+        { "slug", slug }
+    };
+
+    // Записываем парт-номер в тип устройства, если он есть
+    if (!string.IsNullOrEmpty(partNumber)) payload.Add("part_number", partNumber);
+
+    var content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+    var postRes = await _client.PostAsync($"{_baseUrl}/dcim/device-types/", content);
+
+    if (!postRes.IsSuccessStatusCode)
+    {
+      var err = await postRes.Content.ReadAsStringAsync();
+      throw new Exception($"NetBox не дал создать модель '{modelName}'. Код: {postRes.StatusCode}. Ответ: {err}");
+    }
+
+    var postJson = await postRes.Content.ReadFromJsonAsync<JsonElement>();
+    return postJson.GetProperty("id").GetInt32();
+  }
+
+  private async Task AddOrUpdateDeviceAsync(HostAsset host, int siteId, int roleId, int deviceTypeId)
+  {
+    var res = await _client.GetAsync($"{_baseUrl}/dcim/devices/?name={Uri.EscapeDataString(host.Name)}");
+    var json = await res.Content.ReadFromJsonAsync<JsonElement>();
+    int? existingId = null;
+
+    if (res.IsSuccessStatusCode && json.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+    {
+      existingId = results[0].GetProperty("id").GetInt32();
+    }
+
+    var customFields = new Dictionary<string, object>
+    {
+        { "total_cpu", host.TotalCpuThreads },
+        { "total_ram", host.TotalRamGb },
+        { "total_disk", host.TotalDiskGb }
+    };
+
+    if (!existingId.HasValue)
+    {
+      // Заполняем дефолтные финансы только при создании нового сервера
+      customFields.Add("purchase_price", 0);
+      customFields.Add("cpu_weight", 0.4m);
+      customFields.Add("ram_weight", 0.4m);
+      customFields.Add("disk_weight", 0.2m);
+      customFields.Add("cpu_overcommit_ratio", 4.0m);
+    }
+
+    // Сохраняем парт номер еще и в кастомные поля на случай разницы в рамках одной модели
+    if (!string.IsNullOrEmpty(host.PartNumber)) customFields.Add("part_number", host.PartNumber);
+
+    var payload = new Dictionary<string, object>
+    {
+        { "name", host.Name },
+        { "site", siteId },
+        { "role", roleId },
+        { "device_type", deviceTypeId },
+        { "status", "active" },
+        { "custom_fields", customFields }
+    };
+
+    if (!string.IsNullOrEmpty(host.SerialNumber)) payload.Add("serial", host.SerialNumber);
+
+    if (!string.IsNullOrEmpty(host.SerialNumber)) payload.Add("serial", host.SerialNumber);
+
+    if (existingId.HasValue)
+    {
+      Console.WriteLine($"[*] Обновление сервера: {host.Name} (IP: {(string.IsNullOrEmpty(host.IpAddress) ? "не указан" : host.IpAddress)}) (Привязка к {host.Vendor} {host.Model})");
+      var content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+      var patchRes = await _client.PatchAsync($"{_baseUrl}/dcim/devices/{existingId.Value}/", content);
+
+      if (!patchRes.IsSuccessStatusCode)
+      {
+        Console.WriteLine($"[!] Ошибка обновления сервера {host.Name}: {await patchRes.Content.ReadAsStringAsync()}");
+      }
+      else
+      {
+        await AssignIpAddressToDeviceAsync(host, existingId.Value);
+      }
+    }
+    else
+    {
+      Console.WriteLine($"[+] Создание нового сервера: {host.Name} (IP: {(string.IsNullOrEmpty(host.IpAddress) ? "не указан" : host.IpAddress)}) ({host.Vendor} {host.Model})");
+      var content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+      var postRes = await _client.PostAsync($"{_baseUrl}/dcim/devices/", content);
+
+      if (!postRes.IsSuccessStatusCode)
+      {
+        Console.WriteLine($"[!] Ошибка создания сервера {host.Name}: {await postRes.Content.ReadAsStringAsync()}");
+      }
+      else
+      {
+        var postJson = await postRes.Content.ReadFromJsonAsync<JsonElement>();
+        if (postJson.TryGetProperty("id", out var idProp))
+        {
+          int newDeviceId = idProp.GetInt32();
+          await AssignIpAddressToDeviceAsync(host, newDeviceId);
+        }
+      }
+    }
+  }
+
+  private async Task AssignIpAddressToDeviceAsync(HostAsset host, int deviceId)
+  {
+    if (string.IsNullOrEmpty(host.IpAddress))
+    {
+      Console.WriteLine($"      [*] IP адрес не указан для устройства {deviceId}, пропускаем назначение IP");
+      return;
+    }
+
+    try
+    {
+      Console.WriteLine($"      [*] Начинаем назначение IP {host.IpAddress} устройству {deviceId}");
+
+      // Step A: Get or create "mgmt0" interface
+      Console.WriteLine($"      [*] Шаг A: Проверяем наличие интерфейса mgmt0...");
+      var ifaceRes = await _client.GetAsync($"{_baseUrl}/dcim/interfaces/?device_id={deviceId}&name=mgmt0");
+      int? interfaceId = null;
+
+      if (ifaceRes.IsSuccessStatusCode)
+      {
+        var ifaceJson = await ifaceRes.Content.ReadFromJsonAsync<JsonElement>();
+        if (ifaceJson.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+        {
+          interfaceId = results[0].GetProperty("id").GetInt32();
+          Console.WriteLine($"      [✓] Интерфейс mgmt0 найден с ID: {interfaceId}");
+        }
+      }
+
+      // Create interface if it doesn't exist
+      if (!interfaceId.HasValue)
+      {
+        Console.WriteLine($"      [*] Интерфейс mgmt0 не найден, создаем...");
+        var ifacePayload = new Dictionary<string, object>
+        {
+          { "device", deviceId },
+          { "name", "mgmt0" },
+          { "type", "other" }
+        };
+        var ifaceContent = new StringContent(JsonSerializer.Serialize(ifacePayload), System.Text.Encoding.UTF8, "application/json");
+        var ifacePostRes = await _client.PostAsync($"{_baseUrl}/dcim/interfaces/", ifaceContent);
+
+        if (ifacePostRes.IsSuccessStatusCode)
+        {
+          var ifacePostJson = await ifacePostRes.Content.ReadFromJsonAsync<JsonElement>();
+          if (ifacePostJson.TryGetProperty("id", out var ifaceIdProp))
+          {
+            interfaceId = ifaceIdProp.GetInt32();
+            Console.WriteLine($"      [✓] Интерфейс mgmt0 создан с ID: {interfaceId}");
+          }
+        }
+        else
+        {
+          var errMsg = await ifacePostRes.Content.ReadAsStringAsync();
+          Console.WriteLine($"[!] Ошибка создания интерфейса mgmt0 для устройства {deviceId}:");
+          Console.WriteLine($"      HTTP {ifacePostRes.StatusCode}: {errMsg}");
+          return;
+        }
+      }
+
+      if (!interfaceId.HasValue)
+      {
+        Console.WriteLine($"[!] Не удалось получить ID интерфейса mgmt0");
+        return;
+      }
+
+      // Step B: Get or create IP address
+      string ipWithMask = $"{host.IpAddress}/32";
+      Console.WriteLine($"      [*] Шаг B: Проверяем наличие IP {ipWithMask}...");
+      var ipRes = await _client.GetAsync($"{_baseUrl}/ipam/ip-addresses/?address={Uri.EscapeDataString(ipWithMask)}");
+      int? ipAddressId = null;
+
+      if (ipRes.IsSuccessStatusCode)
+      {
+        var ipJson = await ipRes.Content.ReadFromJsonAsync<JsonElement>();
+        if (ipJson.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+        {
+          ipAddressId = results[0].GetProperty("id").GetInt32();
+          Console.WriteLine($"      [✓] IP адрес {ipWithMask} найден с ID: {ipAddressId}");
+        }
+      }
+
+      // Create IP address if it doesn't exist
+      if (!ipAddressId.HasValue)
+      {
+        Console.WriteLine($"      [*] IP адрес {ipWithMask} не найден, создаем...");
+        var ipPayload = new Dictionary<string, object>
+        {
+          { "address", ipWithMask },
+          { "assigned_object_type", "dcim.interface" },
+          { "assigned_object_id", interfaceId.Value }
+        };
+        var ipContent = new StringContent(JsonSerializer.Serialize(ipPayload), System.Text.Encoding.UTF8, "application/json");
+        var ipPostRes = await _client.PostAsync($"{_baseUrl}/ipam/ip-addresses/", ipContent);
+
+        if (ipPostRes.IsSuccessStatusCode)
+        {
+          var ipPostJson = await ipPostRes.Content.ReadFromJsonAsync<JsonElement>();
+          if (ipPostJson.TryGetProperty("id", out var ipIdProp))
+          {
+            ipAddressId = ipIdProp.GetInt32();
+            Console.WriteLine($"      [✓] IP адрес {ipWithMask} создан с ID: {ipAddressId}");
+          }
+        }
+        else
+        {
+          var errMsg = await ipPostRes.Content.ReadAsStringAsync();
+          Console.WriteLine($"[!] Ошибка создания IP адреса {ipWithMask}:");
+          Console.WriteLine($"      HTTP {ipPostRes.StatusCode}: {errMsg}");
+          return;
+        }
+      }
+
+      if (!ipAddressId.HasValue)
+      {
+        Console.WriteLine($"[!] Не удалось получить ID IP адреса {ipWithMask}");
+        return;
+      }
+
+      // Step C: Set as primary IPv4 address
+      Console.WriteLine($"      [*] Шаг C: Устанавливаем IP {ipWithMask} как primary IPv4...");
+      var primaryPayload = new Dictionary<string, object> { { "primary_ip4", ipAddressId.Value } };
+      var primaryContent = new StringContent(JsonSerializer.Serialize(primaryPayload), System.Text.Encoding.UTF8, "application/json");
+      var primaryRes = await _client.PatchAsync($"{_baseUrl}/dcim/devices/{deviceId}/", primaryContent);
+
+      if (!primaryRes.IsSuccessStatusCode)
+      {
+        var errMsg = await primaryRes.Content.ReadAsStringAsync();
+        Console.WriteLine($"[!] Ошибка установки primary IP для устройства {deviceId}:");
+        Console.WriteLine($"      HTTP {primaryRes.StatusCode}: {errMsg}");
+      }
+      else
+      {
+        Console.WriteLine($"      [✓] IP {ipWithMask} успешно назначен как primary IPv4 для устройства {deviceId}");
+      }
+    }
+    catch (Exception ex)
+    {
+      Console.WriteLine($"[!] Ошибка назначения IP адреса устройству {deviceId}: {ex.Message}");
+    }
+  }
+
+  private async Task<int> GetOrCreateManufacturerAsync(string vendorName)
+  {
+    string slug = GenerateSlug(vendorName);
+    var res = await _client.GetAsync($"{_baseUrl}/dcim/manufacturers/?name={Uri.EscapeDataString(vendorName)}");
+
+    if (res.IsSuccessStatusCode)
+    {
+      var json = await res.Content.ReadFromJsonAsync<JsonElement>();
+      if (json.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+        return results[0].GetProperty("id").GetInt32();
+    }
+
+    var payload = new Dictionary<string, object> { { "name", vendorName }, { "slug", slug } };
+    var content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+    var postRes = await _client.PostAsync($"{_baseUrl}/dcim/manufacturers/", content);
+
+    if (!postRes.IsSuccessStatusCode)
+    {
+      var err = await postRes.Content.ReadAsStringAsync();
+      throw new Exception($"NetBox не дал создать производителя '{vendorName}'. Код: {postRes.StatusCode}. Ответ: {err}");
+    }
+
+    var postJson = await postRes.Content.ReadFromJsonAsync<JsonElement>();
+    return postJson.GetProperty("id").GetInt32();
+  }
+
+
+  public async Task<Dictionary<string, CostCalculator.HostPricing>> GetHostPricingsAsync()
+  {
+    Console.Write("   [NetBox] Загрузка прайс-листа хостов... ");
+    var prices = new Dictionary<string, CostCalculator.HostPricing>();
+
+    var response = await _client.GetAsync($"{_baseUrl}/dcim/devices/?limit=2000");
+    if (!response.IsSuccessStatusCode) return prices;
+
+    var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+    if (json.TryGetProperty("results", out var results))
+    {
+      foreach (var device in results.EnumerateArray())
+      {
+        string name = device.GetProperty("name").GetString() ?? "";
+        if (string.IsNullOrEmpty(name)) continue;
+
+        var pricing = new CostCalculator.HostPricing();
+
+        if (device.TryGetProperty("custom_fields", out var cf))
+        {
+          // Extract financial fields
+          pricing.PurchasePrice = SafeParseDecimal(cf, "purchase_price");
+          pricing.CpuWeight = SafeParseDecimal(cf, "weight_cpu");
+          pricing.RamWeight = SafeParseDecimal(cf, "weight_ram");
+          pricing.DiskWeight = SafeParseDecimal(cf, "weight_disk");
+          pricing.CpuOvercommit = SafeParseDecimal(cf, "overcommit_cpu");
+
+          // Extract capacity fields
+          pricing.TotalCpuThreads = SafeParseInt(cf, "total_cpu");
+          pricing.TotalRamGb = SafeParseInt(cf, "total_ram");
+          pricing.TotalDiskGb = SafeParseInt(cf, "total_disk");
+        }
+
+        prices[name] = pricing;
+      }
+    }
+
+    Console.WriteLine($"Загружены цены для {prices.Count} серверов.");
+    return prices;
+  }
+
+  private decimal SafeParseDecimal(JsonElement element, string fieldName)
+  {
+    if (element.TryGetProperty(fieldName, out var value) && value.ValueKind == JsonValueKind.Number)
+    {
+      return value.GetDecimal();
+    }
+    return 0;
+  }
+
+  private int SafeParseInt(JsonElement element, string fieldName)
+  {
+    if (element.TryGetProperty(fieldName, out var value) && value.ValueKind == JsonValueKind.Number)
+    {
+      return value.GetInt32();
+    }
+    return 0;
+  }
+
+  public async Task SyncVirtualMachinesAsync(List<VmAsset> vms, int clusterId)
+  {
+    Console.WriteLine($"\n--- [NetBox] Начинаем синхронизацию (Кластер ID: {clusterId}) ---");
+
+    var cache = await LoadVmCacheAsync();
+    Console.WriteLine($"В базе NetBox найдено машин: {cache.Count}");
+
+    int current = 0;
+    foreach (var vm in vms)
+    {
+      current++;
+      Console.Write($"[{current}/{vms.Count}] {vm.Name}... ");
+
+      // Ensure tenant tag exists before syncing VM
+      if (!string.IsNullOrEmpty(vm.Tenant))
+      {
+        await EnsureTagExistsAsync(vm.Tenant);
+      }
+
+      bool exists = cache.TryGetValue(vm.Name, out int id);
+      var endpoint = exists ? $"/virtualization/virtual-machines/{id}/" : "/virtualization/virtual-machines/";
+      var method = exists ? HttpMethod.Patch : HttpMethod.Post;
+
+      var payload = new Dictionary<string, object>
+            {
+                { "name", vm.Name },
+                { "cluster", clusterId },
+                { "status", vm.IsRunning ? "active" : "offline" },
+                { "vcpus", (decimal)vm.Vcpus },
+                { "memory", vm.MemoryMb },
+                { "disk", vm.DiskGb * 1024 }, // Convert GB to MB for NetBox
+                { "custom_fields", new Dictionary<string, object> {
+                    { "cpu_cost", vm.HardwareCost },
+                    { "total_cost", vm.TotalCost }
+                }}
+            };
+
+      if (!string.IsNullOrEmpty(vm.OsName))
+      {
+        payload.Add("comments", $"Detected OS: {vm.OsName}");
+      }
+
+      if (!string.IsNullOrEmpty(vm.Tenant))
+      {
+        payload.Add("tags", new List<object> { new { name = vm.Tenant } });
+      }
+
+      var request = new HttpRequestMessage(method, _baseUrl + endpoint);
+      request.Content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+
+      var response = await _client.SendAsync(request);
+      if (response.IsSuccessStatusCode)
+      {
+        Console.WriteLine("OK.");
+      }
+      else
+      {
+        var err = await response.Content.ReadAsStringAsync();
+        Console.WriteLine($"ОШИБКА: {response.StatusCode} - {err}");
+      }
+    }
+  }
+
+  private async Task<Dictionary<string, int>> LoadVmCacheAsync()
+  {
+    var cache = new Dictionary<string, int>();
+    var response = await _client.GetAsync($"{_baseUrl}/virtualization/virtual-machines/?limit=2000");
+
+    if (!response.IsSuccessStatusCode)
+      throw new Exception($"Ошибка доступа к NetBox: {response.StatusCode}");
+
+    var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+    if (json.TryGetProperty("results", out var results))
+    {
+      foreach (var vm in results.EnumerateArray())
+      {
+        string? name = vm.GetProperty("name").GetString();
+        if (!string.IsNullOrEmpty(name))
+          cache[name] = vm.GetProperty("id").GetInt32();
+      }
+    }
+    return cache;
+  }
+
+  private async Task EnsureTagExistsAsync(string tagName)
+  {
+    if (_verifiedTags.Contains(tagName))
+    {
+      return;
+    }
+
+    try
+    {
+      // Check if tag already exists in NetBox
+      var getRes = await _client.GetAsync($"{_baseUrl}/extras/tags/?name={Uri.EscapeDataString(tagName)}");
+      if (getRes.IsSuccessStatusCode)
+      {
+        var json = await getRes.Content.ReadFromJsonAsync<JsonElement>();
+        if (json.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+        {
+          _verifiedTags.Add(tagName);
+          return;
+        }
+      }
+
+      // Tag does not exist, create it
+      var payload = new Dictionary<string, object>
+      {
+        { "name", tagName },
+        { "slug", GenerateSlug(tagName) }
+      };
+
+      var content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json");
+      var postRes = await _client.PostAsync($"{_baseUrl}/extras/tags/", content);
+
+      if (postRes.IsSuccessStatusCode)
+      {
+        _verifiedTags.Add(tagName);
+      }
+      else
+      {
+        var err = await postRes.Content.ReadAsStringAsync();
+        Console.WriteLine($"[!] Ошибка создания тега '{tagName}': HTTP {postRes.StatusCode} - {err}");
+      }
+    }
+    catch (Exception ex)
+    {
+      Console.WriteLine($"[!] Ошибка проверки/создания тега '{tagName}': {ex.Message}");
+    }
+  }
+
+  if (!string.IsNullOrEmpty(vm.Tenant))
+{
+    await EnsureTagExistsAsync(vm.Tenant);
+}
+
+var payload = new Dictionary<string, object>
+// ... тут твой старый код формирования payload для ВМ
+
+  private string GenerateSlug(string input)
+  {
+    string slug = input.ToLower().Replace(" ", "-").Replace("_", "-").Trim();
+    return Regex.Replace(slug, "[^a-z0-9-_]", "");
+  }
+}
