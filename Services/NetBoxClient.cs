@@ -31,19 +31,23 @@ public class NetBoxClient
     {
       Console.Write($"   [{++count}/{vms.Count}] {vm.Name}... ");
 
-      // Собираем Markdown-отчет для поля Comments (здесь будет ОС и IP из агента)
       var sb = new StringBuilder();
       sb.AppendLine($"### Данные инвентаризации ({DateTime.Now:yyyy-MM-dd HH:mm})");
       sb.AppendLine($"**ОС:** {(string.IsNullOrEmpty(vm.FullOsName) ? "Не определено (Агент?)" : vm.FullOsName)}");
-      sb.AppendLine($"**Провайдер:** {vm.Provider} | **Хост:** {vm.NodeName}");
+      sb.AppendLine($"**Провайдер/Хост:** {vm.Provider} / {vm.NodeName}");
 
       if (!string.IsNullOrEmpty(vm.PrimaryVlan))
         sb.AppendLine($"**VLAN:** {vm.PrimaryVlan}");
 
-      if (vm.IpAddresses != null && vm.IpAddresses.Any())
+      var filteredIps = vm.IpAddresses?
+        .Where(ip => !string.IsNullOrEmpty(ip) && !ip.Contains(":") && ip != "127.0.0.1" && !ip.StartsWith("10.233."))
+        .Distinct()
+        .ToList();
+
+      if (filteredIps != null && filteredIps.Any())
       {
-        sb.AppendLine("\n**Основные IP:**");
-        foreach (var ip in vm.IpAddresses.Distinct()) sb.AppendLine($"* {ip}");
+        sb.AppendLine("\n**IP Addresses:**");
+        foreach (var ip in filteredIps) sb.AppendLine($"- {ip}");
       }
 
       string endpoint = "/virtualization/virtual-machines/";
@@ -62,7 +66,7 @@ public class NetBoxClient
         { "vcpus", (decimal)vm.Vcpus },
         { "memory", (int)vm.MemoryMb },
         { "disk", vm.DiskGb * 1024 },
-        { "comments", sb.ToString() }, // Тот самый Markdown
+        { "comments", sb.ToString() },
         { "custom_fields", new Dictionary<string, object>
           {
             { "cpu_cost", (int)Math.Round(vm.HardwareCost) },
@@ -89,8 +93,23 @@ public class NetBoxClient
     var res = await _client.GetAsync($"{_baseUrl}/virtualization/virtual-machines/?limit=2000");
     if (!res.IsSuccessStatusCode) return cache;
     var json = await res.Content.ReadFromJsonAsync<JsonElement>();
-    foreach (var item in json.GetProperty("results").EnumerateArray())
-      cache[item.GetProperty("name").GetString()!] = item.GetProperty("id").GetInt32();
+    
+    if (json.ValueKind == JsonValueKind.Object && json.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+    {
+      foreach (var item in results.EnumerateArray())
+      {
+        if (item.ValueKind == JsonValueKind.Object && 
+            item.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String &&
+            item.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.Number)
+        {
+          string name = nameProp.GetString() ?? "";
+          if (!string.IsNullOrEmpty(name))
+          {
+            cache[name] = idProp.GetInt32();
+          }
+        }
+      }
+    }
     return cache;
   }
 

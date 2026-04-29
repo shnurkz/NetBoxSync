@@ -32,8 +32,34 @@ public class VmwareProvider : IVirtualizationProvider
     var req = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/session");
     req.Headers.Authorization = new AuthenticationHeaderValue("Basic", authString);
     var resp = await _client.SendAsync(req);
-    _sessionId = (await resp.Content.ReadAsStringAsync()).Trim('"');
-    _client.DefaultRequestHeaders.TryAddWithoutValidation("vmware-api-session-id", _sessionId);
+    
+    var respStr = await resp.Content.ReadAsStringAsync();
+    try
+    {
+      using var doc = JsonDocument.Parse(respStr);
+      var sessionJson = doc.RootElement;
+      if (sessionJson.ValueKind == JsonValueKind.String)
+      {
+        _sessionId = sessionJson.GetString();
+      }
+      else if (sessionJson.ValueKind == JsonValueKind.Object && sessionJson.TryGetProperty("value", out var val) && val.ValueKind == JsonValueKind.String)
+      {
+        _sessionId = val.GetString();
+      }
+      else
+      {
+        _sessionId = respStr.Trim('"');
+      }
+    }
+    catch
+    {
+      _sessionId = respStr.Trim('"');
+    }
+
+    if (!string.IsNullOrEmpty(_sessionId))
+    {
+      _client.DefaultRequestHeaders.TryAddWithoutValidation("vmware-api-session-id", _sessionId);
+    }
   }
 
   public async Task<List<VmAsset>> GetVirtualMachinesAsync()
@@ -45,7 +71,7 @@ public class VmwareProvider : IVirtualizationProvider
     var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
 
     List<JsonElement> vmItems = json.ValueKind == JsonValueKind.Array ? json.EnumerateArray().ToList() :
-                               (json.TryGetProperty("value", out var val) ? val.EnumerateArray().ToList() : new());
+                               (json.ValueKind == JsonValueKind.Object && json.TryGetProperty("value", out var val) && val.ValueKind == JsonValueKind.Array ? val.EnumerateArray().ToList() : new());
 
     Console.WriteLine($"Найдено: {vmItems.Count}");
 
@@ -56,15 +82,15 @@ public class VmwareProvider : IVirtualizationProvider
       await semaphore.WaitAsync();
       try
       {
-        string vmId = item.GetProperty("vm").GetString() ?? "";
+        string vmId = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("vm", out var vmProp) && vmProp.ValueKind == JsonValueKind.String ? (vmProp.GetString() ?? "") : "";
         var asset = new VmAsset
         {
-          Name = item.GetProperty("name").GetString() ?? "unknown",
+          Name = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? (nameProp.GetString() ?? "unknown") : "unknown",
           Provider = "VMware",
           ClusterName = _clusterName,
-          IsRunning = item.GetProperty("power_state").GetString() == "POWERED_ON",
-          MemoryMb = item.TryGetProperty("memory_size_MiB", out var m) ? m.GetInt32() : 0,
-          Vcpus = item.TryGetProperty("cpu_count", out var c) ? c.GetInt32() : 1
+          IsRunning = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("power_state", out var pwrProp) && pwrProp.ValueKind == JsonValueKind.String && pwrProp.GetString() == "POWERED_ON",
+          MemoryMb = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("memory_size_MiB", out var m) && m.ValueKind == JsonValueKind.Number ? m.GetInt32() : 0,
+          Vcpus = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("cpu_count", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 1
         };
 
         if (asset.IsRunning) await EnrichVmwareGuestAsync(asset, vmId);
@@ -87,28 +113,32 @@ public class VmwareProvider : IVirtualizationProvider
       if (idResp.IsSuccessStatusCode)
       {
         var json = await idResp.Content.ReadFromJsonAsync<JsonElement>();
-        JsonElement data = json.TryGetProperty("value", out var v) ? v : json;
-        if (data.TryGetProperty("full_name", out var fn)) asset.FullOsName = fn.GetString() ?? "";
+        JsonElement data = json.ValueKind == JsonValueKind.Object && json.TryGetProperty("value", out var v) ? v : json;
+        if (data.ValueKind == JsonValueKind.Object && data.TryGetProperty("full_name", out var fn) && fn.ValueKind == JsonValueKind.String) 
+            asset.FullOsName = fn.GetString() ?? "";
       }
 
       var netResp = await _client.GetAsync($"{_baseUrl}/api/vcenter/vm/{vmId}/guest/networking/interfaces");
       if (netResp.IsSuccessStatusCode)
       {
         var netJson = await netResp.Content.ReadFromJsonAsync<JsonElement>();
-        var interfaces = netJson.TryGetProperty("value", out var v) ? v.EnumerateArray() :
+        var interfaces = netJson.ValueKind == JsonValueKind.Object && netJson.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.Array ? v.EnumerateArray() :
                         (netJson.ValueKind == JsonValueKind.Array ? netJson.EnumerateArray() : Enumerable.Empty<JsonElement>());
 
         foreach (var iface in interfaces)
         {
-          if (iface.TryGetProperty("ip", out var ipObj) && ipObj.TryGetProperty("ip_addresses", out var addrs))
+          if (iface.ValueKind == JsonValueKind.Object && iface.TryGetProperty("ip", out var ipObj) && ipObj.ValueKind == JsonValueKind.Object && ipObj.TryGetProperty("ip_addresses", out var addrs) && addrs.ValueKind == JsonValueKind.Array)
           {
             foreach (var addr in addrs.EnumerateArray())
             {
-              string ip = addr.GetProperty("ip_address").GetString() ?? "";
-              if (!string.IsNullOrEmpty(ip) && !ip.Contains(":") &&
-                  ip != "127.0.0.1" && !ip.StartsWith("169.254.") && !ip.StartsWith("10.233."))
+              if (addr.ValueKind == JsonValueKind.Object && addr.TryGetProperty("ip_address", out var ipVal) && ipVal.ValueKind == JsonValueKind.String)
               {
-                asset.IpAddresses.Add(ip);
+                string ip = ipVal.GetString() ?? "";
+                if (!string.IsNullOrEmpty(ip) && !ip.Contains(":") &&
+                    ip != "127.0.0.1" && !ip.StartsWith("169.254.") && !ip.StartsWith("10.233."))
+                {
+                  asset.IpAddresses.Add(ip);
+                }
               }
             }
           }
@@ -120,3 +150,4 @@ public class VmwareProvider : IVirtualizationProvider
 
   public async Task<List<HostAsset>> GetHostsAsync() => new();
 }
+
