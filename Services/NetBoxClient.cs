@@ -33,7 +33,7 @@ public class NetBoxClient
 
       var sb = new StringBuilder();
       sb.AppendLine($"### Данные инвентаризации ({DateTime.Now:yyyy-MM-dd HH:mm})");
-      sb.AppendLine($"**ОС:** {(string.IsNullOrEmpty(vm.FullOsName) ? "Не определено (Агент?)" : vm.FullOsName)}");
+      sb.AppendLine($"**ОС:** {(string.IsNullOrEmpty(vm.FullOsName) ? "Не определено" : vm.FullOsName)}");
       sb.AppendLine($"**Провайдер/Хост:** {vm.Provider} / {vm.NodeName}");
 
       if (!string.IsNullOrEmpty(vm.PrimaryVlan))
@@ -48,6 +48,12 @@ public class NetBoxClient
       {
         sb.AppendLine("\n**IP Addresses:**");
         foreach (var ip in filteredIps) sb.AppendLine($"- {ip}");
+      }
+
+      if (vm.SoftwareList != null && vm.SoftwareList.Any())
+      {
+        sb.AppendLine("\n**Установленное ПО (Inventory):**");
+        foreach (var app in vm.SoftwareList) sb.AppendLine($"- {app}");
       }
 
       string endpoint = "/virtualization/virtual-machines/";
