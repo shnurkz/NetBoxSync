@@ -12,7 +12,7 @@ public class NetBoxClient
 {
   private readonly HttpClient _client;
   private readonly string _baseUrl;
-  private readonly HashSet<string> _verifiedTags = new();
+  private readonly HashSet<string> _existingTags = new();
   private readonly Dictionary<string, int> _clusterCache = new();
   private int? _defaultClusterType;
   private int? _defaultSite;
@@ -47,7 +47,7 @@ public class NetBoxClient
             { "name", vm.Name },
             { "cluster", resolvedClusterId },
             { "status", vm.IsRunning ? "active" : "offline" },
-            { "vcpus", (decimal)vm.Vcpus },
+            { "vcpus", (double)vm.Vcpus },
             { "memory", (int)vm.MemoryMb },
             { "disk", (int)vm.DiskGb * 1024 },
             { "comments", commentsMarkdown },
@@ -64,7 +64,7 @@ public class NetBoxClient
           if (!string.IsNullOrEmpty(vm.Tenant)) 
           {
               string normTenant = DataNormalizer.NormalizeString(vm.Tenant);
-              if (await EnsureTagExistsAsync(normTenant))
+              if (await GetOrCreateTagAsync(normTenant))
               {
                   payload["tags"] = new List<object> { new { name = normTenant } };
               }
@@ -263,11 +263,11 @@ public class NetBoxClient
     return cache;
   }
 
-  public async Task<bool> EnsureTagExistsAsync(string name)
+  public async Task<bool> GetOrCreateTagAsync(string name)
   {
       string normName = DataNormalizer.NormalizeString(name);
       if (string.IsNullOrEmpty(normName)) return false;
-      if (_verifiedTags.Contains(normName)) return true;
+      if (_existingTags.Contains(normName)) return true;
 
       try
       {
@@ -277,19 +277,19 @@ public class NetBoxClient
               var json = await getRes.Content.ReadFromJsonAsync<JsonElement>();
               if (json.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
               {
-                  _verifiedTags.Add(normName);
+                  _existingTags.Add(normName);
                   return true;
               }
           }
 
-          var slug = Regex.Replace(normName.ToLower(), @"[^a-z0-9]+", "-").Trim('-');
+          var slug = Regex.Replace(normName.ToLowerInvariant(), @"[^a-z0-9]+", "-").Trim('-');
           if (string.IsNullOrEmpty(slug)) slug = "tag-" + Guid.NewGuid().ToString().Substring(0, 6);
 
           var payload = new { name = normName, slug = slug };
           var postRes = await PostWithRetryAsync("/extras/tags/", payload);
           if (postRes.IsSuccessStatusCode)
           {
-              _verifiedTags.Add(normName);
+              _existingTags.Add(normName);
               return true;
           }
       }
