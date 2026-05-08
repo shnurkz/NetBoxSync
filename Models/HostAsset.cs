@@ -12,4 +12,9 @@ public class HostAsset
   public int TotalCpuThreads { get; set; }
   public int TotalRamGb { get; set; }
   public int TotalDiskGb { get; set; }
+
+  // New Hardware/BIOS properties
+  public string BiosVersion { get; set; } = string.Empty;
+  public string BiosDate { get; set; } = string.Empty;
+  public string ManagementIp { get; set; } = string.Empty;
 }

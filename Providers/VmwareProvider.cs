@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using NetBoxSync.Models;
 using NetBoxSync.Utilities;
 
@@ -89,6 +90,7 @@ public class VmwareProvider : IVirtualizationProvider
     catch (Exception ex) { Console.WriteLine($"\n      [!] Ошибка VMware Host API: {ex.Message}"); }
 
     var netDict = new Dictionary<string, string>();
+    var vlanDict = new Dictionary<string, string>();
     try
     {
       var netResp = await _client.GetAsync($"{_baseUrl}/api/vcenter/network");
@@ -102,7 +104,24 @@ public class VmwareProvider : IVirtualizationProvider
           if (n.ValueKind == JsonValueKind.Object && n.TryGetProperty("network", out var idProp) && idProp.ValueKind == JsonValueKind.String &&
               n.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String)
           {
-            netDict[idProp.GetString()!] = nameProp.GetString()!;
+            string id = idProp.GetString()!;
+            string name = nameProp.GetString()!;
+            netDict[id] = name;
+            
+            try 
+            {
+               var detailResp = await _client.GetAsync($"{_baseUrl}/api/vcenter/network/{id}");
+               if (detailResp.IsSuccessStatusCode) 
+               {
+                   var detailStr = await detailResp.Content.ReadAsStringAsync();
+                   var vlanMatch = Regex.Match(detailStr, @"""vlan[A-Za-z_]*""\s*:\s*(\d+)");
+                   if (vlanMatch.Success) 
+                   {
+                       vlanDict[id] = vlanMatch.Groups[1].Value;
+                   }
+               }
+            } 
+            catch { }
           }
         }
       }
@@ -145,7 +164,7 @@ public class VmwareProvider : IVirtualizationProvider
           Vcpus = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("cpu_count", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 1
         };
 
-        await EnrichVmwareAssetAsync(asset, vmId, guestOs, netDict);
+        await EnrichVmwareAssetAsync(asset, vmId, guestOs, netDict, vlanDict);
 
         lock (vms) { vms.Add(asset); }
       }
@@ -157,7 +176,7 @@ public class VmwareProvider : IVirtualizationProvider
     return vms;
   }
 
-  private async Task EnrichVmwareAssetAsync(VmAsset asset, string vmId, string fallbackOs, Dictionary<string, string> netDict)
+  private async Task EnrichVmwareAssetAsync(VmAsset asset, string vmId, string fallbackOs, Dictionary<string, string> netDict, Dictionary<string, string> vlanDict)
   {
     try
     {
@@ -202,8 +221,12 @@ public class VmwareProvider : IVirtualizationProvider
                   if (netDict.TryGetValue(netId, out var netName))
                   {
                       asset.PrimaryVlan = netName;
-                      break;
                   }
+                  if (vlanDict.TryGetValue(netId, out var vlanId))
+                  {
+                      asset.VlanId = vlanId;
+                  }
+                  break;
                }
            }
         }
@@ -272,6 +295,59 @@ public class VmwareProvider : IVirtualizationProvider
     catch (Exception ex) { Console.WriteLine($"\n      [!] Ошибка VMware Enrichment API: {ex.Message}"); }
   }
 
-  public async Task<List<HostAsset>> GetHostsAsync() => new();
+  public async Task<List<HostAsset>> GetHostsAsync()
+  {
+      if (string.IsNullOrEmpty(_sessionId)) await AuthenticateAsync();
+      var hosts = new List<HostAsset>();
+
+      try
+      {
+          var hostResp = await _client.GetAsync($"{_baseUrl}/api/vcenter/host");
+          if (hostResp.IsSuccessStatusCode)
+          {
+              var hostJson = await hostResp.Content.ReadFromJsonAsync<JsonElement>();
+              var hostItems = hostJson.ValueKind == JsonValueKind.Array ? hostJson.EnumerateArray() :
+                             (hostJson.ValueKind == JsonValueKind.Object && hostJson.TryGetProperty("value", out var hv) && hv.ValueKind == JsonValueKind.Array ? hv.EnumerateArray() : Enumerable.Empty<JsonElement>());
+              
+              foreach (var h in hostItems)
+              {
+                  if (h.ValueKind == JsonValueKind.Object && h.TryGetProperty("host", out var idProp) && idProp.ValueKind == JsonValueKind.String)
+                  {
+                      string id = idProp.GetString()!;
+                      string name = h.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() ?? "" : "";
+                      
+                      var hostAsset = new HostAsset {
+                          Name = DataNormalizer.NormalizeString(name),
+                          Provider = DataNormalizer.NormalizeString("VMware")
+                      };
+
+                      try 
+                      {
+                          var detailResp = await _client.GetAsync($"{_baseUrl}/api/vcenter/host/{id}");
+                          if (detailResp.IsSuccessStatusCode) 
+                          {
+                             var detailStr = await detailResp.Content.ReadAsStringAsync();
+                             
+                             var biosVerMatch = Regex.Match(detailStr, @"""bios_version""\s*:\s*""([^""]+)""");
+                             if (biosVerMatch.Success) hostAsset.BiosVersion = biosVerMatch.Groups[1].Value;
+
+                             var biosDateMatch = Regex.Match(detailStr, @"""bios_date""\s*:\s*""([^""]+)""");
+                             if (biosDateMatch.Success) hostAsset.BiosDate = biosDateMatch.Groups[1].Value;
+
+                             var mgmtIpMatch = Regex.Match(detailStr, @"""management_ip""\s*:\s*""([^""]+)""");
+                             if (mgmtIpMatch.Success) hostAsset.ManagementIp = mgmtIpMatch.Groups[1].Value;
+                          }
+                      } 
+                      catch { }
+
+                      hosts.Add(hostAsset);
+                  }
+              }
+          }
+      }
+      catch (Exception ex) { Console.WriteLine($"\n      [!] Ошибка VMware Host API (GetHostsAsync): {ex.Message}"); }
+      
+      return hosts;
+  }
 }
 
