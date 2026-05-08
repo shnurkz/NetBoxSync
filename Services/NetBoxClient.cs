@@ -12,7 +12,7 @@ public class NetBoxClient
 {
   private readonly HttpClient _client;
   private readonly string _baseUrl;
-  private readonly HashSet<string> _verifiedTags = new();
+  private readonly Dictionary<string, string> _tagSlugMap = new(StringComparer.OrdinalIgnoreCase);
   private readonly Dictionary<string, int> _clusterCache = new();
   private int? _defaultClusterType;
   private int? _defaultSite;
@@ -29,6 +29,7 @@ public class NetBoxClient
   {
     SyncLogger.Info($"--- [NetBox] Синхронизация {vms.Count} машин ---");
     var cache = await LoadVmCacheAsync();
+    await PreloadTagsAsync();
 
     int count = 0;
     foreach (var vm in vms)
@@ -47,7 +48,7 @@ public class NetBoxClient
             { "name", vm.Name },
             { "cluster", resolvedClusterId },
             { "status", vm.IsRunning ? "active" : "offline" },
-            { "vcpus", (decimal)vm.Vcpus },
+            { "vcpus", (float)vm.Vcpus },
             { "memory", (int)vm.MemoryMb },
             { "disk", (int)vm.DiskGb * 1024 },
             { "comments", commentsMarkdown },
@@ -64,13 +65,13 @@ public class NetBoxClient
           if (!string.IsNullOrEmpty(vm.Tenant)) 
           {
               string normTenant = DataNormalizer.NormalizeString(vm.Tenant);
-              if (await GetOrCreateTagAsync(normTenant))
+              if (_tagSlugMap.ContainsKey(normTenant))
               {
                   payload["tags"] = new List<object> { new { name = normTenant } };
               }
               else
               {
-                  SyncLogger.Warning($"Skipping tag '{normTenant}' for VM {vm.Name} due to creation failure.");
+                  SyncLogger.Warning($"Tag {normTenant} not found in NetBox, skipping tag for this VM");
               }
           }
 
@@ -263,43 +264,33 @@ public class NetBoxClient
     return cache;
   }
 
-  public async Task<bool> GetOrCreateTagAsync(string name)
+  private async Task PreloadTagsAsync()
   {
-      string normName = DataNormalizer.NormalizeString(name);
-      if (string.IsNullOrEmpty(normName)) return false;
-      if (_verifiedTags.Contains(normName)) return true;
-
       try
       {
-          string slug = normName.ToLower().Replace(" ", "-");
-          slug = Regex.Replace(slug, @"[^a-z0-9\-]+", "");
-          if (string.IsNullOrEmpty(slug)) slug = "tag-" + Guid.NewGuid().ToString().Substring(0, 6);
-
-          var getRes = await GetWithRetryAsync($"/extras/tags/?slug={Uri.EscapeDataString(slug)}");
-          if (getRes.IsSuccessStatusCode)
+          var res = await GetWithRetryAsync("/extras/tags/?limit=1000");
+          if (res.IsSuccessStatusCode)
           {
-              var json = await getRes.Content.ReadFromJsonAsync<JsonElement>();
-              if (json.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+              var json = await res.Content.ReadFromJsonAsync<JsonElement>();
+              if (json.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
               {
-                  _verifiedTags.Add(normName);
-                  return true;
+                  foreach (var item in results.EnumerateArray())
+                  {
+                      if (item.TryGetProperty("name", out var nameProp) && item.TryGetProperty("slug", out var slugProp))
+                      {
+                          _tagSlugMap[nameProp.GetString() ?? ""] = slugProp.GetString() ?? "";
+                      }
+                  }
               }
-          }
-
-          var payload = new { name = normName, slug = slug };
-          var postRes = await PostWithRetryAsync("/extras/tags/", payload);
-          if (postRes.IsSuccessStatusCode)
-          {
-              _verifiedTags.Add(normName);
-              return true;
           }
       }
       catch (Exception ex)
       {
-          SyncLogger.Warning($"[NetBox] Failed to ensure tag '{normName}': {ex.Message}");
+          SyncLogger.Warning($"[NetBox] Failed to preload tags: {ex.Message}");
       }
-      return false;
   }
+
+
   public async Task<Dictionary<string, int>> EnsureDevicesExistAsync(List<HostAsset> h, int s, int r) => new();
   public async Task<Dictionary<string, CostCalculator.HostPricing>> GetHostPricingsAsync() => new();
 
@@ -330,6 +321,7 @@ public class NetBoxClient
           string errBody = await finalResp.Content.ReadAsStringAsync();
           if (finalResp.StatusCode == System.Net.HttpStatusCode.BadRequest)
           {
+              Console.WriteLine($"[NETBOX 400 EXACT PAYLOAD ERROR] POST {endpoint}: {errBody}");
               try 
               {
                   var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(errBody);
@@ -373,6 +365,10 @@ public class NetBoxClient
       if (!finalResp.IsSuccessStatusCode)
       {
           string errBody = await finalResp.Content.ReadAsStringAsync();
+          if (finalResp.StatusCode == System.Net.HttpStatusCode.BadRequest)
+          {
+              Console.WriteLine($"[NETBOX 400 EXACT PAYLOAD ERROR] PATCH {endpoint}: {errBody}");
+          }
           SyncLogger.Error($"Final PATCH to {endpoint} failed with {finalResp.StatusCode}. Body: {errBody}");
       }
       return finalResp;
