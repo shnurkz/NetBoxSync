@@ -72,7 +72,7 @@ try
   
   if (!allHosts.Any()) 
   {
-      NetBoxSync.Utilities.SyncLogger.Warning("!!! WARNING: No physical host data collected. Check API permissions !!!");
+      NetBoxSync.Utilities.SyncLogger.Warning("No hosts found!");
   }
 
   int totalCpu = allHosts.Sum(h => h.TotalCpuThreads);
