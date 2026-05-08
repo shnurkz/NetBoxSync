@@ -27,4 +27,6 @@ public class VmAsset
   public List<string> SoftwareList { get; set; } = new();
   public string GuestState { get; set; } = "";
   public string PrimaryVlan { get; set; } = "";
+  public string VlanId { get; set; } = string.Empty;
+  public string DiscoveryMethod { get; set; } = string.Empty;
 }

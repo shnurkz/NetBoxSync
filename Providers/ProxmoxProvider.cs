@@ -2,6 +2,8 @@ using NetBoxSync.Models;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using NetBoxSync.Services;
+using NetBoxSync.Utilities;
 
 namespace NetBoxSync.Providers;
 
@@ -10,11 +12,17 @@ public class ProxmoxProvider : IVirtualizationProvider
   private readonly HttpClient _client;
   private readonly string _baseUrl;
   private readonly string _clusterName;
+  private readonly SshDiscoveryService _sshDiscovery;
+  private readonly string _sshUser;
+  private readonly string _sshPass;
 
-  public ProxmoxProvider(string url, string token, string clusterName = "Proxmox-Cluster")
+  public ProxmoxProvider(string url, string token, string clusterName = "Proxmox-Cluster", string sshUser = "tech_svc", string sshPass = "P@ssw0rd123!")
   {
     _baseUrl = url.TrimEnd('/');
     _clusterName = clusterName;
+    _sshUser = sshUser;
+    _sshPass = sshPass;
+    _sshDiscovery = new SshDiscoveryService();
     var handler = new SocketsHttpHandler { SslOptions = new System.Net.Security.SslClientAuthenticationOptions { RemoteCertificateValidationCallback = delegate { return true; } } };
     _client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(3) };
     _client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", token.Trim());
@@ -49,7 +57,30 @@ public class ProxmoxProvider : IVirtualizationProvider
         };
 
         await EnrichViaConfigAsync(asset, node, vmid);
-        if (asset.IsRunning) await EnrichViaAgentAsync(asset, node, vmid);
+        if (asset.IsRunning) 
+        {
+            await EnrichViaAgentAsync(asset, node, vmid);
+            
+            bool sshSuccess = false;
+            if (asset.IpAddresses.Any())
+            {
+                var swList = await _sshDiscovery.GetInstalledSoftwareAsync(asset.IpAddresses.First(), _sshUser, _sshPass);
+                if (swList.Any())
+                {
+                    asset.SoftwareList = swList;
+                    asset.DiscoveryMethod = "SSH";
+                    sshSuccess = true;
+                }
+            }
+
+            if (!sshSuccess)
+            {
+                await TryAgentSoftwareDiscoveryAsync(asset, node, vmid);
+            }
+
+            if (string.IsNullOrEmpty(asset.DiscoveryMethod))
+                asset.DiscoveryMethod = "API Only";
+        }
         lock (assets) { assets.Add(asset); }
       }
       finally { semaphore.Release(); }
@@ -120,18 +151,65 @@ public class ProxmoxProvider : IVirtualizationProvider
       var json = await resp.Content.ReadFromJsonAsync<JsonElement>();
       if (json.ValueKind == JsonValueKind.Object && json.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
       {
-        if (data.TryGetProperty("net0", out var net0) && net0.ValueKind == JsonValueKind.String)
+        foreach (var prop in data.EnumerateObject())
         {
-          var match = Regex.Match(net0.GetString() ?? "", @"tag=(\d+)");
-          if (match.Success) asset.PrimaryVlan = match.Groups[1].Value;
+           if (prop.Name.StartsWith("net") && prop.Value.ValueKind == JsonValueKind.String)
+           {
+               var match = Regex.Match(prop.Value.GetString() ?? "", @"tag=(\d+)");
+               if (match.Success)
+               {
+                   asset.VlanId = match.Groups[1].Value;
+                   asset.PrimaryVlan = $"VLAN_{asset.VlanId}";
+                   break;
+               }
+           }
         }
         if (data.TryGetProperty("tags", out var tags) && tags.ValueKind == JsonValueKind.String) 
         {
-            asset.Tenant = tags.GetString()?.Split(',')[0];
+            asset.Tenant = tags.GetString()?.Split(',')[0] ?? "";
         }
       }
     }
     catch { }
+  }
+
+  private async Task TryAgentSoftwareDiscoveryAsync(VmAsset asset, string node, int vmid)
+  {
+      try
+      {
+          var cmdArray = asset.FullOsName.Contains("Ubuntu", StringComparison.OrdinalIgnoreCase) || asset.FullOsName.Contains("Debian", StringComparison.OrdinalIgnoreCase)
+              ? new[] { "dpkg-query", "-W", "-f=${Package}|${Version}\n" }
+              : new[] { "rpm", "-qa", "--qf", "%{NAME}|%{VERSION}\n" };
+
+          var payload = new { command = cmdArray };
+          var execResp = await _client.PostAsJsonAsync($"{_baseUrl}/nodes/{node}/qemu/{vmid}/agent/exec", payload);
+          
+          if (execResp.IsSuccessStatusCode)
+          {
+              var execJson = await execResp.Content.ReadFromJsonAsync<JsonElement>();
+              if (execJson.ValueKind == JsonValueKind.Object && execJson.TryGetProperty("data", out var data) && data.TryGetProperty("pid", out var pidProp) && pidProp.ValueKind == JsonValueKind.Number)
+              {
+                  int pid = pidProp.GetInt32();
+                  await Task.Delay(2000); // Give agent time to execute
+
+                  var statusResp = await _client.GetAsync($"{_baseUrl}/nodes/{node}/qemu/{vmid}/agent/exec-status?pid={pid}");
+                  if (statusResp.IsSuccessStatusCode)
+                  {
+                      var statusJson = await statusResp.Content.ReadFromJsonAsync<JsonElement>();
+                      if (statusJson.ValueKind == JsonValueKind.Object && statusJson.TryGetProperty("data", out var statusData) && statusData.TryGetProperty("out-data", out var outDataProp) && outDataProp.ValueKind == JsonValueKind.String)
+                      {
+                          var lines = outDataProp.GetString()?.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                          if (lines != null && lines.Any())
+                          {
+                              asset.SoftwareList.AddRange(lines.Select(l => l.Trim()));
+                              asset.DiscoveryMethod = "Agent API";
+                          }
+                      }
+                  }
+              }
+          }
+      }
+      catch { }
   }
   public async Task<List<HostAsset>> GetHostsAsync() => new();
 }
