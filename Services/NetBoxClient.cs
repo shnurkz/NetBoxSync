@@ -35,6 +35,9 @@ public class NetBoxClient
     {
       try
       {
+          vm.Name = DataNormalizer.NormalizeString(vm.Name);
+          if (string.IsNullOrEmpty(vm.Name)) continue;
+
           string commentsMarkdown = MarkdownReportGenerator.Generate(vm);
           int resolvedClusterId = await ResolveClusterAsync(vm, clusterId);
 
@@ -46,7 +49,7 @@ public class NetBoxClient
             { "status", vm.IsRunning ? "active" : "offline" },
             { "vcpus", (decimal)vm.Vcpus },
             { "memory", (int)vm.MemoryMb },
-            { "disk", vm.DiskGb * 1024 },
+            { "disk", (long)vm.DiskGb * 1024 * 1024 }, // Convert GB to KB as requested
             { "comments", commentsMarkdown },
             { "custom_fields", new Dictionary<string, object>
               {
@@ -177,7 +180,9 @@ public class NetBoxClient
               var content = new StringContent(json, Encoding.UTF8, "application/json");
               var response = await _client.PostAsync(_baseUrl + endpoint, content);
               if (response.IsSuccessStatusCode) return response;
-              SyncLogger.Warning($"POST to {endpoint} returned {response.StatusCode}. Retrying...");
+              
+              string errBody = await response.Content.ReadAsStringAsync();
+              SyncLogger.Warning($"POST to {endpoint} returned {response.StatusCode}. Body: {errBody}. Retrying...");
           }
           catch (Exception ex)
           {
@@ -186,7 +191,13 @@ public class NetBoxClient
           await Task.Delay(2000);
       }
       var finalContent = new StringContent(json, Encoding.UTF8, "application/json");
-      return await _client.PostAsync(_baseUrl + endpoint, finalContent);
+      var finalResp = await _client.PostAsync(_baseUrl + endpoint, finalContent);
+      if (!finalResp.IsSuccessStatusCode)
+      {
+          string errBody = await finalResp.Content.ReadAsStringAsync();
+          SyncLogger.Error($"Final POST to {endpoint} failed with {finalResp.StatusCode}. Body: {errBody}");
+      }
+      return finalResp;
   }
 
   private async Task<HttpResponseMessage> PatchWithRetryAsync(string endpoint, object payload, int maxRetries = 3)
@@ -200,7 +211,9 @@ public class NetBoxClient
               var request = new HttpRequestMessage(HttpMethod.Patch, _baseUrl + endpoint) { Content = content };
               var response = await _client.SendAsync(request);
               if (response.IsSuccessStatusCode) return response;
-              SyncLogger.Warning($"PATCH to {endpoint} returned {response.StatusCode}. Retrying...");
+              
+              string errBody = await response.Content.ReadAsStringAsync();
+              SyncLogger.Warning($"PATCH to {endpoint} returned {response.StatusCode}. Body: {errBody}. Retrying...");
           }
           catch (Exception ex)
           {
@@ -209,7 +222,14 @@ public class NetBoxClient
           await Task.Delay(2000);
       }
       var finalContent = new StringContent(json, Encoding.UTF8, "application/json");
-      return await _client.SendAsync(new HttpRequestMessage(HttpMethod.Patch, _baseUrl + endpoint) { Content = finalContent });
+      var finalReq = new HttpRequestMessage(HttpMethod.Patch, _baseUrl + endpoint) { Content = finalContent };
+      var finalResp = await _client.SendAsync(finalReq);
+      if (!finalResp.IsSuccessStatusCode)
+      {
+          string errBody = await finalResp.Content.ReadAsStringAsync();
+          SyncLogger.Error($"Final PATCH to {endpoint} failed with {finalResp.StatusCode}. Body: {errBody}");
+      }
+      return finalResp;
   }
 
   private async Task<HttpResponseMessage> GetWithRetryAsync(string endpoint, int maxRetries = 3)
