@@ -73,7 +73,7 @@ public class SshDiscoveryService
         }
         catch (Exception ex)
         {
-            NetBoxSync.Utilities.SyncLogger.Info($"[SSH] Discovery Failed for {ipAddress}: {ex.Message}");
+            NetBoxSync.Utilities.SyncLogger.Info($"[SSH] Access Failed for {ipAddress}");
         }
 
         return softwareList.Distinct().ToList();

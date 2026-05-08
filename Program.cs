@@ -77,9 +77,9 @@ try
   double usedRam = allVms.Sum(v => v.MemoryMb) / 1024.0;
   int usedDisk = allVms.Sum(v => v.DiskGb);
 
-  string cpuPct = totalCpu > 0 ? $"({Math.Round((double)usedCpu / totalCpu * 100, 1)}%)" : "(DATA MISSING)";
-  string ramPct = totalRam > 0 ? $"({Math.Round(usedRam / totalRam * 100, 1)}%)" : "(DATA MISSING)";
-  string diskPct = totalDisk > 0 ? $"({Math.Round((double)usedDisk / totalDisk * 100, 1)}%)" : "(DATA MISSING)";
+  string cpuPct = totalCpu > 0 ? $"({Math.Round((double)usedCpu / totalCpu * 100, 1)}%)" : "(HOST DATA MISSING)";
+  string ramPct = totalRam > 0 ? $"({Math.Round(usedRam / totalRam * 100, 1)}%)" : "(HOST DATA MISSING)";
+  string diskPct = totalDisk > 0 ? $"({Math.Round((double)usedDisk / totalDisk * 100, 1)}%)" : "(HOST DATA MISSING)";
 
   NetBoxSync.Utilities.SyncLogger.Info($"Всего ВМ: {allVms.Count}");
   NetBoxSync.Utilities.SyncLogger.Info($"CPU:  Занято {usedCpu} vCPU / Всего {totalCpu} потоков (Свободно: {totalCpu - usedCpu}) {cpuPct}");
