@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using NetBoxSync.Utilities;
 
 namespace NetBoxSync.Services;
 
@@ -76,7 +77,7 @@ public class NetBoxClient
       };
 
       if (hostMap.TryGetValue(vm.NodeName, out int devId)) payload["device"] = devId;
-      if (!string.IsNullOrEmpty(vm.Tenant)) payload["tags"] = new List<object> { new { name = vm.Tenant } };
+      if (!string.IsNullOrEmpty(vm.Tenant)) payload["tags"] = new List<object> { new { name = DataNormalizer.NormalizeString(vm.Tenant) } };
 
       var request = new HttpRequestMessage(method, _baseUrl + endpoint);
       request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
@@ -103,6 +104,7 @@ public class NetBoxClient
             item.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.Number)
         {
           string name = nameProp.GetString() ?? "";
+          name = DataNormalizer.NormalizeString(name);
           if (!string.IsNullOrEmpty(name))
           {
             cache[name] = idProp.GetInt32();

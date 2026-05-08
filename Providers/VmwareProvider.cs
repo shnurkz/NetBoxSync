@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using NetBoxSync.Models;
+using NetBoxSync.Utilities;
 
 namespace NetBoxSync.Providers;
 
@@ -126,15 +127,19 @@ public class VmwareProvider : IVirtualizationProvider
       {
         string vmId = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("vm", out var vmProp) && vmProp.ValueKind == JsonValueKind.String ? (vmProp.GetString() ?? "") : "";
         string hostId = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("host", out var hProp) && hProp.ValueKind == JsonValueKind.String ? (hProp.GetString() ?? "") : "";
-        string nodeName = hostDict.TryGetValue(hostId, out var hn) ? hn : "unknown";
+        string nodeNameRaw = hostDict.TryGetValue(hostId, out var hn) ? hn : "unknown";
         string guestOs = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("guest_OS", out var gos) && gos.ValueKind == JsonValueKind.String ? gos.GetString() ?? "" : "";
+        string rawName = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? (nameProp.GetString() ?? "unknown") : "unknown";
+
+        string name = DataNormalizer.NormalizeString(rawName);
+        if (string.IsNullOrEmpty(name)) return;
 
         var asset = new VmAsset
         {
-          Name = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("name", out var nameProp) && nameProp.ValueKind == JsonValueKind.String ? (nameProp.GetString() ?? "unknown") : "unknown",
-          Provider = "VMware",
-          ClusterName = _clusterName,
-          NodeName = nodeName,
+          Name = name,
+          Provider = DataNormalizer.NormalizeString("VMware"),
+          ClusterName = DataNormalizer.NormalizeString(_clusterName),
+          NodeName = DataNormalizer.NormalizeString(nodeNameRaw),
           IsRunning = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("power_state", out var pwrProp) && pwrProp.ValueKind == JsonValueKind.String && pwrProp.GetString() == "POWERED_ON",
           MemoryMb = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("memory_size_MiB", out var m) && m.ValueKind == JsonValueKind.Number ? m.GetInt32() : 0,
           Vcpus = item.ValueKind == JsonValueKind.Object && item.TryGetProperty("cpu_count", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 1
