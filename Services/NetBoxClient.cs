@@ -271,7 +271,11 @@ public class NetBoxClient
 
       try
       {
-          var getRes = await GetWithRetryAsync($"/extras/tags/?name={Uri.EscapeDataString(normName)}");
+          string slug = normName.ToLower().Replace(" ", "-");
+          slug = Regex.Replace(slug, @"[^a-z0-9\-]+", "");
+          if (string.IsNullOrEmpty(slug)) slug = "tag-" + Guid.NewGuid().ToString().Substring(0, 6);
+
+          var getRes = await GetWithRetryAsync($"/extras/tags/?slug={Uri.EscapeDataString(slug)}");
           if (getRes.IsSuccessStatusCode)
           {
               var json = await getRes.Content.ReadFromJsonAsync<JsonElement>();
@@ -281,9 +285,6 @@ public class NetBoxClient
                   return true;
               }
           }
-
-          var slug = Regex.Replace(normName.ToLowerInvariant(), @"[^a-z0-9]+", "-").Trim('-');
-          if (string.IsNullOrEmpty(slug)) slug = "tag-" + Guid.NewGuid().ToString().Substring(0, 6);
 
           var payload = new { name = normName, slug = slug };
           var postRes = await PostWithRetryAsync("/extras/tags/", payload);
