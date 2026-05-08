@@ -240,7 +240,7 @@ public class NetBoxClient
   private async Task<Dictionary<string, int>> LoadVmCacheAsync()
   {
     var cache = new Dictionary<string, int>();
-    var res = await GetWithRetryAsync("/virtualization/virtual-machines/?limit=2000");
+    var res = await GetWithRetryAsync("/virtualization/virtual-machines/?limit=0");
     if (!res.IsSuccessStatusCode) return cache;
     var json = await res.Content.ReadFromJsonAsync<JsonElement>();
     
@@ -268,7 +268,7 @@ public class NetBoxClient
   {
       try
       {
-          var res = await GetWithRetryAsync("/extras/tags/?limit=1000");
+          var res = await GetWithRetryAsync("/extras/tags/?limit=0");
           if (res.IsSuccessStatusCode)
           {
               var json = await res.Content.ReadFromJsonAsync<JsonElement>();
