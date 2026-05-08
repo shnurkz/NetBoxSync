@@ -249,34 +249,57 @@ public class ProxmoxProvider : IVirtualizationProvider
                           Provider = DataNormalizer.NormalizeString("Proxmox")
                       };
 
-                      try
+                      if (node.TryGetProperty("maxcpu", out var maxCpuProp) && maxCpuProp.ValueKind == JsonValueKind.Number)
                       {
-                          var statusResp = await _client.GetAsync($"{_baseUrl}/nodes/{nodeName}/status");
-                          if (statusResp.IsSuccessStatusCode)
+                          hostAsset.TotalCpuThreads = maxCpuProp.GetInt32();
+                      }
+                      
+                      if (node.TryGetProperty("maxmem", out var maxMemProp) && maxMemProp.ValueKind == JsonValueKind.Number)
+                      {
+                          hostAsset.TotalRamGb = (int)(maxMemProp.GetInt64() / 1073741824);
+                      }
+
+                      if (node.TryGetProperty("maxdisk", out var maxDiskProp) && maxDiskProp.ValueKind == JsonValueKind.Number)
+                      {
+                          hostAsset.TotalDiskGb = (int)(maxDiskProp.GetInt64() / 1073741824);
+                      }
+
+                      if (hostAsset.TotalCpuThreads == 0 || hostAsset.TotalRamGb == 0)
+                      {
+                          try
                           {
-                              var statusJson = await statusResp.Content.ReadFromJsonAsync<JsonElement>();
-                              if (statusJson.ValueKind == JsonValueKind.Object && statusJson.TryGetProperty("data", out var statusData) && statusData.ValueKind == JsonValueKind.Object)
+                              var statusResp = await _client.GetAsync($"{_baseUrl}/nodes/{nodeName}/status");
+                              if (statusResp.IsSuccessStatusCode)
                               {
-                                  if (statusData.TryGetProperty("cpuinfo", out var cpuinfo) && cpuinfo.ValueKind == JsonValueKind.Object && cpuinfo.TryGetProperty("cpus", out var cpusProp) && cpusProp.ValueKind == JsonValueKind.Number)
+                                  var statusJson = await statusResp.Content.ReadFromJsonAsync<JsonElement>();
+                                  if (statusJson.ValueKind == JsonValueKind.Object && statusJson.TryGetProperty("data", out var statusData) && statusData.ValueKind == JsonValueKind.Object)
                                   {
-                                      hostAsset.TotalCpuThreads = cpusProp.GetInt32();
-                                  }
+                                      if (statusData.TryGetProperty("cpuinfo", out var cpuinfo) && cpuinfo.ValueKind == JsonValueKind.Object && cpuinfo.TryGetProperty("cpus", out var cpusProp) && cpusProp.ValueKind == JsonValueKind.Number)
+                                      {
+                                          hostAsset.TotalCpuThreads = cpusProp.GetInt32();
+                                      }
 
-                                  if (statusData.TryGetProperty("memory", out var memory) && memory.ValueKind == JsonValueKind.Object && memory.TryGetProperty("total", out var memTotalProp) && memTotalProp.ValueKind == JsonValueKind.Number)
-                                  {
-                                      hostAsset.TotalRamGb = (int)(memTotalProp.GetInt64() / 1073741824);
-                                  }
+                                      if (statusData.TryGetProperty("memory", out var memory) && memory.ValueKind == JsonValueKind.Object && memory.TryGetProperty("total", out var memTotalProp) && memTotalProp.ValueKind == JsonValueKind.Number)
+                                      {
+                                          hostAsset.TotalRamGb = (int)(memTotalProp.GetInt64() / 1073741824);
+                                      }
 
-                                  if (statusData.TryGetProperty("rootfs", out var rootfs) && rootfs.ValueKind == JsonValueKind.Object && rootfs.TryGetProperty("total", out var rootfsTotalProp) && rootfsTotalProp.ValueKind == JsonValueKind.Number)
-                                  {
-                                      hostAsset.TotalDiskGb = (int)(rootfsTotalProp.GetInt64() / 1073741824);
+                                      if (statusData.TryGetProperty("rootfs", out var rootfs) && rootfs.ValueKind == JsonValueKind.Object && rootfs.TryGetProperty("total", out var rootfsTotalProp) && rootfsTotalProp.ValueKind == JsonValueKind.Number)
+                                      {
+                                          hostAsset.TotalDiskGb = (int)(rootfsTotalProp.GetInt64() / 1073741824);
+                                      }
                                   }
                               }
                           }
+                          catch (Exception ex)
+                          {
+                              SyncLogger.Warning($"[Proxmox] Failed to fetch hardware details for node {nodeName}: {ex.Message}");
+                          }
                       }
-                      catch (Exception ex)
+
+                      if (hostAsset.TotalCpuThreads == 0 || hostAsset.TotalRamGb == 0)
                       {
-                          SyncLogger.Warning($"[Proxmox] Failed to fetch hardware details for node {nodeName}: {ex.Message}");
+                          SyncLogger.Warning($"[Proxmox] Hardware values still zero for {nodeName}. Raw JSON: {node.GetRawText()}");
                       }
 
                       hosts.Add(hostAsset);
