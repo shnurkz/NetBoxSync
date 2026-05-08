@@ -346,11 +346,16 @@ public class VmwareProvider : IVirtualizationProvider
                                  hostAsset.TotalRamGb = (int)(memMb / 1024);
                              }
 
+                             var numThreadsMatch = Regex.Match(detailStr, @"""num_cpu_threads""\s*:\s*(\d+)");
                              var threadMatch = Regex.Match(detailStr, @"""cpu_thread_count""\s*:\s*(\d+)");
                              var coreMatch = Regex.Match(detailStr, @"""cpu_core_count""\s*:\s*(\d+)");
                              var cpuMatch = Regex.Match(detailStr, @"""cpu_count""\s*:\s*(\d+)");
 
-                             if (threadMatch.Success && int.TryParse(threadMatch.Groups[1].Value, out int threads))
+                             if (numThreadsMatch.Success && int.TryParse(numThreadsMatch.Groups[1].Value, out int numThreads))
+                             {
+                                 hostAsset.TotalCpuThreads = numThreads;
+                             }
+                             else if (threadMatch.Success && int.TryParse(threadMatch.Groups[1].Value, out int threads))
                              {
                                  hostAsset.TotalCpuThreads = threads;
                              }

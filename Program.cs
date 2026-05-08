@@ -68,7 +68,7 @@ try
   }
 
   // --- ИТОГОВЫЙ ОТЧЕТ ПО ЕМКОСТИ КЛАСТЕРА ---
-  Console.WriteLine("\n--- ИТОГОВЫЙ ОТЧЕТ ПО ЕМКОСТИ КЛАСТЕРА ---");
+  NetBoxSync.Utilities.SyncLogger.Info("\n--- ИТОГОВЫЙ ОТЧЕТ ПО ЕМКОСТИ КЛАСТЕРА ---");
   int totalCpu = allHosts.Sum(h => h.TotalCpuThreads);
   int totalRam = allHosts.Sum(h => h.TotalRamGb);
   int totalDisk = allHosts.Sum(h => h.TotalDiskGb);
@@ -77,18 +77,18 @@ try
   int usedRam = (int)Math.Round((double)allVms.Sum(v => v.MemoryMb) / 1024);
   int usedDisk = allVms.Sum(v => v.DiskGb);
 
-  string cpuPct = totalCpu > 0 ? $"({Math.Round((double)usedCpu / totalCpu * 100, 1)}%)" : "(0%)";
-  string ramPct = totalRam > 0 ? $"({Math.Round((double)usedRam / totalRam * 100, 1)}%)" : "(0%)";
-  string diskPct = totalDisk > 0 ? $"({Math.Round((double)usedDisk / totalDisk * 100, 1)}%)" : "(0%)";
+  string cpuPct = totalCpu > 0 ? $"({Math.Round((double)usedCpu / totalCpu * 100, 1)}%)" : "(N/A - No Host Data)";
+  string ramPct = totalRam > 0 ? $"({Math.Round((double)usedRam / totalRam * 100, 1)}%)" : "(N/A - No Host Data)";
+  string diskPct = totalDisk > 0 ? $"({Math.Round((double)usedDisk / totalDisk * 100, 1)}%)" : "(N/A - No Host Data)";
 
-  Console.WriteLine($"Всего ВМ: {allVms.Count}");
-  Console.WriteLine($"CPU:  Занято {usedCpu} vCPU / Всего {totalCpu} потоков (Свободно: {totalCpu - usedCpu}) {cpuPct}");
-  Console.WriteLine($"RAM:  Занято {usedRam} GB / Всего {totalRam} GB (Свободно: {totalRam - usedRam} GB) {ramPct}");
-  Console.WriteLine($"DISK: Занято {usedDisk} GB / Всего {totalDisk} GB (Свободно: {totalDisk - usedDisk} GB) {diskPct}\n");
+  NetBoxSync.Utilities.SyncLogger.Info($"Всего ВМ: {allVms.Count}");
+  NetBoxSync.Utilities.SyncLogger.Info($"CPU:  Занято {usedCpu} vCPU / Всего {totalCpu} потоков (Свободно: {totalCpu - usedCpu}) {cpuPct}");
+  NetBoxSync.Utilities.SyncLogger.Info($"RAM:  Занято {usedRam} GB / Всего {totalRam} GB (Свободно: {totalRam - usedRam} GB) {ramPct}");
+  NetBoxSync.Utilities.SyncLogger.Info($"DISK: Занято {usedDisk} GB / Всего {totalDisk} GB (Свободно: {totalDisk - usedDisk} GB) {diskPct}\n");
 
-  Console.WriteLine(">>> Все задачи успешно завершены!");
+  NetBoxSync.Utilities.SyncLogger.Info(">>> Все задачи успешно завершены!");
 }
 catch (Exception ex)
 {
-  Console.WriteLine($"\nКРИТИЧЕСКИЙ СБОЙ: {ex.Message}");
+  NetBoxSync.Utilities.SyncLogger.Error($"\nКРИТИЧЕСКИЙ СБОЙ: {ex.Message}");
 }
