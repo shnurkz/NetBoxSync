@@ -12,7 +12,7 @@ public class NetBoxClient
 {
   private readonly HttpClient _client;
   private readonly string _baseUrl;
-  private readonly HashSet<string> _existingTags = new();
+  private readonly HashSet<string> _verifiedTags = new();
   private readonly Dictionary<string, int> _clusterCache = new();
   private int? _defaultClusterType;
   private int? _defaultSite;
@@ -47,7 +47,7 @@ public class NetBoxClient
             { "name", vm.Name },
             { "cluster", resolvedClusterId },
             { "status", vm.IsRunning ? "active" : "offline" },
-            { "vcpus", (double)vm.Vcpus },
+            { "vcpus", (decimal)vm.Vcpus },
             { "memory", (int)vm.MemoryMb },
             { "disk", (int)vm.DiskGb * 1024 },
             { "comments", commentsMarkdown },
@@ -267,7 +267,7 @@ public class NetBoxClient
   {
       string normName = DataNormalizer.NormalizeString(name);
       if (string.IsNullOrEmpty(normName)) return false;
-      if (_existingTags.Contains(normName)) return true;
+      if (_verifiedTags.Contains(normName)) return true;
 
       try
       {
@@ -277,7 +277,7 @@ public class NetBoxClient
               var json = await getRes.Content.ReadFromJsonAsync<JsonElement>();
               if (json.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
               {
-                  _existingTags.Add(normName);
+                  _verifiedTags.Add(normName);
                   return true;
               }
           }
@@ -289,7 +289,7 @@ public class NetBoxClient
           var postRes = await PostWithRetryAsync("/extras/tags/", payload);
           if (postRes.IsSuccessStatusCode)
           {
-              _existingTags.Add(normName);
+              _verifiedTags.Add(normName);
               return true;
           }
       }
