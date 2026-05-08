@@ -83,6 +83,10 @@ public class ProxmoxProvider : IVirtualizationProvider
         }
         lock (assets) { assets.Add(asset); }
       }
+      catch (Exception ex)
+      {
+          SyncLogger.Error($"[Proxmox] Failed to process VM (VMID: {item.GetRawText()}): {ex.Message}");
+      }
       finally { semaphore.Release(); }
     });
     await Task.WhenAll(tasks);

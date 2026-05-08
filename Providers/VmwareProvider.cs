@@ -168,7 +168,10 @@ public class VmwareProvider : IVirtualizationProvider
 
         lock (vms) { vms.Add(asset); }
       }
-      catch { }
+      catch (Exception ex)
+      {
+          SyncLogger.Error($"[VMware] Failed to process VM (ID: {item.GetRawText()}): {ex.Message}");
+      }
       finally { semaphore.Release(); }
     });
 
