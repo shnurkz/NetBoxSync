@@ -332,10 +332,10 @@ public class VmwareProvider : IVirtualizationProvider
                              var detailStr = await detailResp.Content.ReadAsStringAsync();
                              
                              var biosVerMatch = Regex.Match(detailStr, @"""bios_version""\s*:\s*""([^""]+)""");
-                             if (biosVerMatch.Success) hostAsset.BiosVersion = biosVerMatch.Groups[1].Value;
+                             if (biosVerMatch.Success) hostAsset.BiosVersion = biosVerMatch.Groups[1].Value.Trim();
 
                              var biosDateMatch = Regex.Match(detailStr, @"""bios_date""\s*:\s*""([^""]+)""");
-                             if (biosDateMatch.Success) hostAsset.BiosDate = biosDateMatch.Groups[1].Value;
+                             if (biosDateMatch.Success) hostAsset.BiosDate = biosDateMatch.Groups[1].Value.Trim();
 
                              var mgmtIpMatch = Regex.Match(detailStr, @"""management_ip""\s*:\s*""([^""]+)""");
                              if (mgmtIpMatch.Success) hostAsset.ManagementIp = mgmtIpMatch.Groups[1].Value;

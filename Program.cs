@@ -74,16 +74,16 @@ try
   int totalDisk = allHosts.Sum(h => h.TotalDiskGb);
 
   int usedCpu = allVms.Sum(v => v.Vcpus);
-  int usedRam = (int)Math.Round((double)allVms.Sum(v => v.MemoryMb) / 1024);
+  double usedRam = allVms.Sum(v => v.MemoryMb) / 1024.0;
   int usedDisk = allVms.Sum(v => v.DiskGb);
 
-  string cpuPct = totalCpu > 0 ? $"({Math.Round((double)usedCpu / totalCpu * 100, 1)}%)" : "(N/A - No Host Data)";
-  string ramPct = totalRam > 0 ? $"({Math.Round((double)usedRam / totalRam * 100, 1)}%)" : "(N/A - No Host Data)";
-  string diskPct = totalDisk > 0 ? $"({Math.Round((double)usedDisk / totalDisk * 100, 1)}%)" : "(N/A - No Host Data)";
+  string cpuPct = totalCpu > 0 ? $"({Math.Round((double)usedCpu / totalCpu * 100, 1)}%)" : "(DATA MISSING)";
+  string ramPct = totalRam > 0 ? $"({Math.Round(usedRam / totalRam * 100, 1)}%)" : "(DATA MISSING)";
+  string diskPct = totalDisk > 0 ? $"({Math.Round((double)usedDisk / totalDisk * 100, 1)}%)" : "(DATA MISSING)";
 
   NetBoxSync.Utilities.SyncLogger.Info($"Всего ВМ: {allVms.Count}");
   NetBoxSync.Utilities.SyncLogger.Info($"CPU:  Занято {usedCpu} vCPU / Всего {totalCpu} потоков (Свободно: {totalCpu - usedCpu}) {cpuPct}");
-  NetBoxSync.Utilities.SyncLogger.Info($"RAM:  Занято {usedRam} GB / Всего {totalRam} GB (Свободно: {totalRam - usedRam} GB) {ramPct}");
+  NetBoxSync.Utilities.SyncLogger.Info($"RAM:  Занято {Math.Round(usedRam, 1)} GB / Всего {totalRam} GB (Свободно: {Math.Round(totalRam - usedRam, 1)} GB) {ramPct}");
   NetBoxSync.Utilities.SyncLogger.Info($"DISK: Занято {usedDisk} GB / Всего {totalDisk} GB (Свободно: {totalDisk - usedDisk} GB) {diskPct}\n");
 
   NetBoxSync.Utilities.SyncLogger.Info(">>> Все задачи успешно завершены!");
