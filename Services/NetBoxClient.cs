@@ -32,24 +32,7 @@ public class NetBoxClient
     {
       Console.Write($"   [{++count}/{vms.Count}] {vm.Name}... ");
 
-      var sb = new StringBuilder();
-      sb.AppendLine($"### Данные инвентаризации ({DateTime.Now:yyyy-MM-dd HH:mm})");
-      sb.AppendLine($"**ОС:** {(string.IsNullOrEmpty(vm.FullOsName) ? "Не определено" : vm.FullOsName)}");
-      sb.AppendLine($"**Провайдер/Хост:** {vm.Provider} / {vm.NodeName}");
-
-      if (!string.IsNullOrEmpty(vm.PrimaryVlan))
-        sb.AppendLine($"**VLAN:** {vm.PrimaryVlan}");
-
-      var filteredIps = vm.IpAddresses?
-        .Where(ip => !string.IsNullOrEmpty(ip) && !ip.Contains(":") && ip != "127.0.0.1" && !ip.StartsWith("10.233."))
-        .Distinct()
-        .ToList();
-
-      if (filteredIps != null && filteredIps.Any())
-      {
-        sb.AppendLine("\n**IP Addresses:**");
-        foreach (var ip in filteredIps) sb.AppendLine($"- {ip}");
-      }
+      string commentsMarkdown = MarkdownReportGenerator.Generate(vm);
 
       string endpoint = "/virtualization/virtual-machines/";
       HttpMethod method = HttpMethod.Post;
@@ -67,7 +50,7 @@ public class NetBoxClient
         { "vcpus", (decimal)vm.Vcpus },
         { "memory", (int)vm.MemoryMb },
         { "disk", vm.DiskGb * 1024 },
-        { "comments", sb.ToString() },
+        { "comments", commentsMarkdown },
         { "custom_fields", new Dictionary<string, object>
           {
             { "cpu_cost", (int)Math.Round(vm.HardwareCost) },
