@@ -49,7 +49,7 @@ public class NetBoxClient
             { "status", vm.IsRunning ? "active" : "offline" },
             { "vcpus", (decimal)vm.Vcpus },
             { "memory", (int)vm.MemoryMb },
-            { "disk", (long)vm.DiskGb * 1024 * 1024 }, // Convert GB to KB as requested
+            { "disk", (int)vm.DiskGb * 1024 },
             { "comments", commentsMarkdown },
             { "custom_fields", new Dictionary<string, object>
               {
@@ -60,7 +60,19 @@ public class NetBoxClient
           };
 
           if (hostMap.TryGetValue(vm.NodeName, out int devId)) payload["device"] = devId;
-          if (!string.IsNullOrEmpty(vm.Tenant)) payload["tags"] = new List<object> { new { name = DataNormalizer.NormalizeString(vm.Tenant) } };
+          
+          if (!string.IsNullOrEmpty(vm.Tenant)) 
+          {
+              string normTenant = DataNormalizer.NormalizeString(vm.Tenant);
+              if (await EnsureTagExistsAsync(normTenant))
+              {
+                  payload["tags"] = new List<object> { new { name = normTenant } };
+              }
+              else
+              {
+                  SyncLogger.Warning($"Skipping tag '{normTenant}' for VM {vm.Name} due to creation failure.");
+              }
+          }
 
           HttpResponseMessage res;
           int currentVmId = 0;
@@ -251,7 +263,42 @@ public class NetBoxClient
     return cache;
   }
 
-  public async Task EnsureTagExistsAsync(string name) => await Task.CompletedTask;
+  public async Task<bool> EnsureTagExistsAsync(string name)
+  {
+      string normName = DataNormalizer.NormalizeString(name);
+      if (string.IsNullOrEmpty(normName)) return false;
+      if (_verifiedTags.Contains(normName)) return true;
+
+      try
+      {
+          var getRes = await GetWithRetryAsync($"/extras/tags/?name={Uri.EscapeDataString(normName)}");
+          if (getRes.IsSuccessStatusCode)
+          {
+              var json = await getRes.Content.ReadFromJsonAsync<JsonElement>();
+              if (json.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+              {
+                  _verifiedTags.Add(normName);
+                  return true;
+              }
+          }
+
+          var slug = Regex.Replace(normName.ToLower(), @"[^a-z0-9]+", "-").Trim('-');
+          if (string.IsNullOrEmpty(slug)) slug = "tag-" + Guid.NewGuid().ToString().Substring(0, 6);
+
+          var payload = new { name = normName, slug = slug };
+          var postRes = await PostWithRetryAsync("/extras/tags/", payload);
+          if (postRes.IsSuccessStatusCode)
+          {
+              _verifiedTags.Add(normName);
+              return true;
+          }
+      }
+      catch (Exception ex)
+      {
+          SyncLogger.Warning($"[NetBox] Failed to ensure tag '{normName}': {ex.Message}");
+      }
+      return false;
+  }
   public async Task<Dictionary<string, int>> EnsureDevicesExistAsync(List<HostAsset> h, int s, int r) => new();
   public async Task<Dictionary<string, CostCalculator.HostPricing>> GetHostPricingsAsync() => new();
 
