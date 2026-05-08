@@ -63,8 +63,10 @@ public class NetBoxClient
           if (!string.IsNullOrEmpty(vm.Tenant)) payload["tags"] = new List<object> { new { name = DataNormalizer.NormalizeString(vm.Tenant) } };
 
           HttpResponseMessage res;
+          int currentVmId = 0;
           if (cache.TryGetValue(vm.Name, out int id))
           {
+            currentVmId = id;
             endpoint += $"{id}/";
             res = await PatchWithRetryAsync(endpoint, payload);
           }
@@ -73,14 +75,97 @@ public class NetBoxClient
             res = await PostWithRetryAsync(endpoint, payload);
           }
 
-          if (res.IsSuccessStatusCode) SyncLogger.Info($"[{++count}/{vms.Count}] {vm.Name} ... OK.");
-          else SyncLogger.Error($"[{++count}/{vms.Count}] {vm.Name} ... ОШИБКА: {res.StatusCode}");
+          if (res.IsSuccessStatusCode) 
+          {
+              if (currentVmId == 0)
+              {
+                  var respJson = await res.Content.ReadFromJsonAsync<JsonElement>();
+                  if (respJson.TryGetProperty("id", out var newIdProp)) currentVmId = newIdProp.GetInt32();
+              }
+
+              if (currentVmId > 0)
+              {
+                  await SyncNetworkingAsync(currentVmId, vm);
+              }
+              
+              SyncLogger.Info($"[{++count}/{vms.Count}] {vm.Name} ... OK.");
+          }
+          else 
+          {
+              SyncLogger.Error($"[{++count}/{vms.Count}] {vm.Name} ... ОШИБКА: {res.StatusCode}");
+          }
       }
       catch (Exception ex)
       {
           SyncLogger.Error($"[NetBoxClient] Failed to sync VM {vm.Name}: {ex.Message}");
       }
     }
+  }
+
+  private async Task SyncNetworkingAsync(int vmId, VmAsset vm)
+  {
+      try
+      {
+          int interfaceId = 0;
+          var ifaceResp = await GetWithRetryAsync($"/virtualization/interfaces/?virtual_machine_id={vmId}");
+          if (ifaceResp.IsSuccessStatusCode)
+          {
+              var ifaceJson = await ifaceResp.Content.ReadFromJsonAsync<JsonElement>();
+              if (ifaceJson.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+              {
+                  interfaceId = results[0].GetProperty("id").GetInt32();
+              }
+              else
+              {
+                  var createIface = await PostWithRetryAsync("/virtualization/interfaces/", new { virtual_machine = vmId, name = "eth0" });
+                  if (createIface.IsSuccessStatusCode)
+                  {
+                      var newIfaceJson = await createIface.Content.ReadFromJsonAsync<JsonElement>();
+                      interfaceId = newIfaceJson.GetProperty("id").GetInt32();
+                  }
+              }
+          }
+
+          string primaryIp = vm.IpAddresses.FirstOrDefault();
+          if (!string.IsNullOrEmpty(primaryIp) && interfaceId > 0)
+          {
+              string ipCidr = primaryIp.Contains("/") ? primaryIp : $"{primaryIp}/32";
+              
+              int ipId = 0;
+              var ipResp = await GetWithRetryAsync($"/ipam/ip-addresses/?address={ipCidr}");
+              if (ipResp.IsSuccessStatusCode)
+              {
+                  var ipJson = await ipResp.Content.ReadFromJsonAsync<JsonElement>();
+                  if (ipJson.TryGetProperty("results", out var ipResults) && ipResults.GetArrayLength() > 0)
+                  {
+                      ipId = ipResults[0].GetProperty("id").GetInt32();
+                  }
+                  else
+                  {
+                      var createIp = await PostWithRetryAsync("/ipam/ip-addresses/", new { 
+                          address = ipCidr, 
+                          status = "active",
+                          assigned_object_type = "virtualization.vminterface",
+                          assigned_object_id = interfaceId
+                      });
+                      if (createIp.IsSuccessStatusCode)
+                      {
+                          var newIpJson = await createIp.Content.ReadFromJsonAsync<JsonElement>();
+                          ipId = newIpJson.GetProperty("id").GetInt32();
+                      }
+                  }
+              }
+
+              if (ipId > 0)
+              {
+                  await PatchWithRetryAsync($"/virtualization/virtual-machines/{vmId}/", new { primary_ip4 = ipId });
+              }
+          }
+      }
+      catch (Exception ex)
+      {
+          SyncLogger.Warning($"[NetBox] Failed to sync networking for VM {vm.Name}: {ex.Message}");
+      }
   }
 
   private async Task<int> ResolveClusterAsync(VmAsset vm, int defaultClusterId)
