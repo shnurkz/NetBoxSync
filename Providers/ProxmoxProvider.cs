@@ -215,5 +215,71 @@ public class ProxmoxProvider : IVirtualizationProvider
       }
       catch { }
   }
-  public async Task<List<HostAsset>> GetHostsAsync() => new();
+  public async Task<List<HostAsset>> GetHostsAsync()
+  {
+      var hosts = new List<HostAsset>();
+      try
+      {
+          var nodesResp = await _client.GetAsync($"{_baseUrl}/nodes");
+          if (nodesResp.IsSuccessStatusCode)
+          {
+              var nodesJson = await nodesResp.Content.ReadFromJsonAsync<JsonElement>();
+              var nodesList = nodesJson.ValueKind == JsonValueKind.Object && nodesJson.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array 
+                  ? data.EnumerateArray() 
+                  : Enumerable.Empty<JsonElement>();
+
+              foreach (var node in nodesList)
+              {
+                  if (node.ValueKind == JsonValueKind.Object && node.TryGetProperty("node", out var nodeProp) && nodeProp.ValueKind == JsonValueKind.String)
+                  {
+                      string nodeName = nodeProp.GetString()!;
+                      
+                      var hostAsset = new HostAsset 
+                      {
+                          Name = DataNormalizer.NormalizeString(nodeName),
+                          Provider = DataNormalizer.NormalizeString("Proxmox")
+                      };
+
+                      try
+                      {
+                          var statusResp = await _client.GetAsync($"{_baseUrl}/nodes/{nodeName}/status");
+                          if (statusResp.IsSuccessStatusCode)
+                          {
+                              var statusJson = await statusResp.Content.ReadFromJsonAsync<JsonElement>();
+                              if (statusJson.ValueKind == JsonValueKind.Object && statusJson.TryGetProperty("data", out var statusData) && statusData.ValueKind == JsonValueKind.Object)
+                              {
+                                  if (statusData.TryGetProperty("cpuinfo", out var cpuinfo) && cpuinfo.ValueKind == JsonValueKind.Object && cpuinfo.TryGetProperty("cpus", out var cpusProp) && cpusProp.ValueKind == JsonValueKind.Number)
+                                  {
+                                      hostAsset.TotalCpuThreads = cpusProp.GetInt32();
+                                  }
+
+                                  if (statusData.TryGetProperty("memory", out var memory) && memory.ValueKind == JsonValueKind.Object && memory.TryGetProperty("total", out var memTotalProp) && memTotalProp.ValueKind == JsonValueKind.Number)
+                                  {
+                                      hostAsset.TotalRamGb = (int)(memTotalProp.GetInt64() / 1073741824);
+                                  }
+
+                                  if (statusData.TryGetProperty("rootfs", out var rootfs) && rootfs.ValueKind == JsonValueKind.Object && rootfs.TryGetProperty("total", out var rootfsTotalProp) && rootfsTotalProp.ValueKind == JsonValueKind.Number)
+                                  {
+                                      hostAsset.TotalDiskGb = (int)(rootfsTotalProp.GetInt64() / 1073741824);
+                                  }
+                              }
+                          }
+                      }
+                      catch (Exception ex)
+                      {
+                          SyncLogger.Warning($"[Proxmox] Failed to fetch hardware details for node {nodeName}: {ex.Message}");
+                      }
+
+                      hosts.Add(hostAsset);
+                  }
+              }
+          }
+      }
+      catch (Exception ex)
+      {
+          SyncLogger.Error($"[Proxmox] Failed to fetch nodes: {ex.Message}");
+      }
+      
+      return hosts;
+  }
 }
