@@ -52,7 +52,7 @@ public class ProxmoxProvider : IVirtualizationProvider
           NodeName = node,
           IsRunning = item.TryGetProperty("status", out var statProp) && statProp.ValueKind == JsonValueKind.String && statProp.GetString() == "running",
           Vcpus = item.TryGetProperty("maxcpu", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 1,
-          MemoryMb = item.TryGetProperty("maxmem", out var m) && m.ValueKind == JsonValueKind.Number ? (int)(m.GetInt64() / 1024 / 1024) : 0,
+          MemoryMb = item.TryGetProperty("maxmem", out var m) && m.ValueKind == JsonValueKind.Number ? (int)(m.GetInt64() / 1048576) : 0,
           DiskGb = item.TryGetProperty("maxdisk", out var d) && d.ValueKind == JsonValueKind.Number ? (int)(d.GetInt64() / 1073741824) : 0
         };
 
@@ -144,7 +144,10 @@ public class ProxmoxProvider : IVirtualizationProvider
         }
       }
     }
-    catch { }
+    catch (Exception ex)
+    {
+        SyncLogger.Warning($"[Proxmox] Agent OS/Network error for VM {vmid}: {ex.Message}");
+    }
   }
 
   private async Task EnrichViaConfigAsync(VmAsset asset, string node, int vmid)
@@ -174,7 +177,10 @@ public class ProxmoxProvider : IVirtualizationProvider
         }
       }
     }
-    catch { }
+    catch (Exception ex)
+    {
+        SyncLogger.Warning($"[Proxmox] Config enrichment error for VM {vmid}: {ex.Message}");
+    }
   }
 
   private async Task TryAgentSoftwareDiscoveryAsync(VmAsset asset, string node, int vmid)
@@ -213,7 +219,10 @@ public class ProxmoxProvider : IVirtualizationProvider
               }
           }
       }
-      catch { }
+      catch (Exception ex)
+      {
+          SyncLogger.Warning($"[Proxmox] Agent Software Discovery error for VM {vmid}: {ex.Message}");
+      }
   }
   public async Task<List<HostAsset>> GetHostsAsync()
   {
