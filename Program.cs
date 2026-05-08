@@ -74,13 +74,17 @@ try
   int totalDisk = allHosts.Sum(h => h.TotalDiskGb);
 
   int usedCpu = allVms.Sum(v => v.Vcpus);
-  int usedRam = (int)allVms.Sum(v => v.MemoryMb) / 1024;
+  int usedRam = (int)Math.Round((double)allVms.Sum(v => v.MemoryMb) / 1024);
   int usedDisk = allVms.Sum(v => v.DiskGb);
 
+  string cpuPct = totalCpu > 0 ? $"({Math.Round((double)usedCpu / totalCpu * 100, 1)}%)" : "(0%)";
+  string ramPct = totalRam > 0 ? $"({Math.Round((double)usedRam / totalRam * 100, 1)}%)" : "(0%)";
+  string diskPct = totalDisk > 0 ? $"({Math.Round((double)usedDisk / totalDisk * 100, 1)}%)" : "(0%)";
+
   Console.WriteLine($"Всего ВМ: {allVms.Count}");
-  Console.WriteLine($"CPU:  Занято {usedCpu} vCPU / Всего {totalCpu} потоков (Свободно: {totalCpu - usedCpu})");
-  Console.WriteLine($"RAM:  Занято {usedRam} GB / Всего {totalRam} GB (Свободно: {totalRam - usedRam} GB)");
-  Console.WriteLine($"DISK: Занято {usedDisk} GB / Всего {totalDisk} GB (Свободно: {totalDisk - usedDisk} GB)\n");
+  Console.WriteLine($"CPU:  Занято {usedCpu} vCPU / Всего {totalCpu} потоков (Свободно: {totalCpu - usedCpu}) {cpuPct}");
+  Console.WriteLine($"RAM:  Занято {usedRam} GB / Всего {totalRam} GB (Свободно: {totalRam - usedRam} GB) {ramPct}");
+  Console.WriteLine($"DISK: Занято {usedDisk} GB / Всего {totalDisk} GB (Свободно: {totalDisk - usedDisk} GB) {diskPct}\n");
 
   Console.WriteLine(">>> Все задачи успешно завершены!");
 }

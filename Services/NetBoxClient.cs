@@ -327,7 +327,20 @@ public class NetBoxClient
       if (!finalResp.IsSuccessStatusCode)
       {
           string errBody = await finalResp.Content.ReadAsStringAsync();
-          SyncLogger.Error($"Final POST to {endpoint} failed with {finalResp.StatusCode}. Body: {errBody}");
+          if (finalResp.StatusCode == System.Net.HttpStatusCode.BadRequest)
+          {
+              try 
+              {
+                  var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(errBody);
+                  var fields = string.Join(", ", dict.Select(kv => $"{kv.Key}: {kv.Value}"));
+                  SyncLogger.Error($"NetBox Validation Error on POST {endpoint} -> Fields: {fields}");
+              } 
+              catch { SyncLogger.Error($"Final POST to {endpoint} failed with 400. Body: {errBody}"); }
+          }
+          else
+          {
+              SyncLogger.Error($"Final POST to {endpoint} failed with {finalResp.StatusCode}. Body: {errBody}");
+          }
       }
       return finalResp;
   }

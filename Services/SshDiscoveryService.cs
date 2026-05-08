@@ -73,9 +73,7 @@ public class SshDiscoveryService
         }
         catch (Exception ex)
         {
-            // Gracefully handle exceptions (Timeout, Auth Failure) by returning an empty list
-            // We can optionally log the exception message here
-            Console.WriteLine($"      [!] SSH Discovery Failed for {ipAddress}: {ex.Message}");
+            NetBoxSync.Utilities.SyncLogger.Info($"[SSH] Discovery Failed for {ipAddress}: {ex.Message}");
         }
 
         return softwareList.Distinct().ToList();
