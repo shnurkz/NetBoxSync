@@ -339,9 +339,35 @@ public class VmwareProvider : IVirtualizationProvider
 
                              var mgmtIpMatch = Regex.Match(detailStr, @"""management_ip""\s*:\s*""([^""]+)""");
                              if (mgmtIpMatch.Success) hostAsset.ManagementIp = mgmtIpMatch.Groups[1].Value;
+
+                             var memMatch = Regex.Match(detailStr, @"""memory_size_MiB""\s*:\s*(\d+)");
+                             if (memMatch.Success && long.TryParse(memMatch.Groups[1].Value, out long memMb))
+                             {
+                                 hostAsset.TotalRamGb = (int)(memMb / 1024);
+                             }
+
+                             var threadMatch = Regex.Match(detailStr, @"""cpu_thread_count""\s*:\s*(\d+)");
+                             var coreMatch = Regex.Match(detailStr, @"""cpu_core_count""\s*:\s*(\d+)");
+                             var cpuMatch = Regex.Match(detailStr, @"""cpu_count""\s*:\s*(\d+)");
+
+                             if (threadMatch.Success && int.TryParse(threadMatch.Groups[1].Value, out int threads))
+                             {
+                                 hostAsset.TotalCpuThreads = threads;
+                             }
+                             else if (coreMatch.Success && int.TryParse(coreMatch.Groups[1].Value, out int cores))
+                             {
+                                 hostAsset.TotalCpuThreads = cores * 2; // Assume HT
+                             }
+                             else if (cpuMatch.Success && int.TryParse(cpuMatch.Groups[1].Value, out int sockets))
+                             {
+                                 hostAsset.TotalCpuThreads = sockets * 16; // Assumed multiplier per socket
+                             }
                           }
                       } 
-                      catch { }
+                      catch (Exception detailEx) 
+                      {
+                          SyncLogger.Warning($"[VMware] Failed to get host details for {id}: {detailEx.Message}");
+                      }
 
                       hosts.Add(hostAsset);
                   }
