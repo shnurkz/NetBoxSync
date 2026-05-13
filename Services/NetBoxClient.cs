@@ -397,6 +397,7 @@ public class NetBoxClient
               var content = new StringContent(json, Encoding.UTF8, "application/json");
               var response = await _client.PostAsync(_baseUrl + endpoint, content);
               if (response.IsSuccessStatusCode) return response;
+              if (response.StatusCode == System.Net.HttpStatusCode.BadRequest) return response;
               
               string errBody = await response.Content.ReadAsStringAsync();
               SyncLogger.Warning($"POST to {endpoint} returned {response.StatusCode}. Body: {errBody}. Retrying...");
@@ -442,6 +443,7 @@ public class NetBoxClient
               var request = new HttpRequestMessage(HttpMethod.Patch, _baseUrl + endpoint) { Content = content };
               var response = await _client.SendAsync(request);
               if (response.IsSuccessStatusCode) return response;
+              if (response.StatusCode == System.Net.HttpStatusCode.BadRequest) return response;
               
               string errBody = await response.Content.ReadAsStringAsync();
               SyncLogger.Warning($"PATCH to {endpoint} returned {response.StatusCode}. Body: {errBody}. Retrying...");
@@ -475,6 +477,8 @@ public class NetBoxClient
           {
               var response = await _client.GetAsync(_baseUrl + endpoint);
               if (response.IsSuccessStatusCode) return response;
+              if (response.StatusCode == System.Net.HttpStatusCode.BadRequest) return response;
+              
               SyncLogger.Warning($"GET to {endpoint} returned {response.StatusCode}. Retrying...");
           }
           catch (Exception ex)
