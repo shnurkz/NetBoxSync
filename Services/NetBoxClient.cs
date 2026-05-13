@@ -48,9 +48,9 @@ public class NetBoxClient
               tagsToAssign.Add(DataNormalizer.NormalizeString(vm.Tenant));
           }
 
-          foreach (var tagName in tagsToAssign)
+          for (int i = 0; i < tagsToAssign.Count; i++)
           {
-              await EnsureTagExistsAsync(tagName);
+              tagsToAssign[i] = await EnsureTagExistsAsync(tagsToAssign[i]);
           }
 
           string endpoint = "/virtualization/virtual-machines/";
@@ -96,6 +96,27 @@ public class NetBoxClient
           else
           {
             res = await PostWithRetryAsync(endpoint, payload);
+            
+            if (!res.IsSuccessStatusCode && res.StatusCode == System.Net.HttpStatusCode.BadRequest)
+            {
+                string errBody = await res.Content.ReadAsStringAsync();
+                if (errBody.Contains("Virtual machine name must be unique per cluster"))
+                {
+                    var fallbackRes = await GetWithRetryAsync($"/virtualization/virtual-machines/?name={Uri.EscapeDataString(vm.Name)}&limit=0");
+                    if (fallbackRes.IsSuccessStatusCode)
+                    {
+                        var fallbackJson = await fallbackRes.Content.ReadFromJsonAsync<JsonElement>();
+                        if (fallbackJson.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+                        {
+                            int fallbackId = results[0].GetProperty("id").GetInt32();
+                            currentVmId = fallbackId;
+                            string patchEndpoint = $"/virtualization/virtual-machines/{fallbackId}/";
+                            res = await PatchWithRetryAsync(patchEndpoint, payload);
+                            SyncLogger.Info($"[INFO] Duplicate caught for {vm.Name}, successfully fell back to PATCH");
+                        }
+                    }
+                }
+            }
           }
 
           if (res.IsSuccessStatusCode) 
@@ -320,23 +341,32 @@ public class NetBoxClient
       }
   }
 
-  public async Task EnsureTagExistsAsync(string name)
+  public async Task<string> EnsureTagExistsAsync(string name)
   {
       try
       {
-          string encodedName = Uri.EscapeDataString(name);
-          var res = await GetWithRetryAsync($"/extras/tags/?name={encodedName}&limit=0");
+          if (string.IsNullOrWhiteSpace(name)) return name;
+
+          string slug = name.ToLowerInvariant().Replace(" ", "-");
+          slug = Regex.Replace(slug, @"[^a-z0-9\-]", "");
+
+          var res = await GetWithRetryAsync($"/extras/tags/?slug={Uri.EscapeDataString(slug)}&limit=0");
           if (res.IsSuccessStatusCode)
           {
               var json = await res.Content.ReadFromJsonAsync<JsonElement>();
               if (json.TryGetProperty("count", out var countProp) && countProp.GetInt32() > 0)
               {
-                  return;
+                  if (json.TryGetProperty("results", out var results) && results.GetArrayLength() > 0)
+                  {
+                      var firstMatch = results[0];
+                      if (firstMatch.TryGetProperty("name", out var foundNameProp))
+                      {
+                          return foundNameProp.GetString() ?? name;
+                      }
+                  }
+                  return name;
               }
           }
-
-          string slug = name.ToLowerInvariant().Replace(" ", "-");
-          slug = Regex.Replace(slug, @"[^a-z0-9\-]", "");
 
           var payload = new Dictionary<string, string>
           {
@@ -345,10 +375,12 @@ public class NetBoxClient
           };
 
           await PostWithRetryAsync("/extras/tags/", payload);
+          return name;
       }
       catch (Exception ex)
       {
           SyncLogger.Error($"[NetBoxClient] HTTP exception in EnsureTagExistsAsync for '{name}': {ex.Message}");
+          return name;
       }
   }
 
