@@ -78,9 +78,16 @@ public class NetBoxClient
               payload["tags"] = tagsToAssign.Select(t => new { name = t }).ToList<object>();
           }
 
+          string targetClusterName = vm.ClusterName;
+          if (string.IsNullOrEmpty(targetClusterName)) 
+          {
+              targetClusterName = DataNormalizer.NormalizeString($"Standalone-{vm.NodeName}");
+          }
+          string cacheKey = $"{targetClusterName}::{vm.Name}";
+
           HttpResponseMessage res;
           int currentVmId = 0;
-          if (cache.TryGetValue(vm.Name, out int id))
+          if (cache.TryGetValue(cacheKey, out int id))
           {
             currentVmId = id;
             endpoint += $"{id}/";
@@ -108,8 +115,19 @@ public class NetBoxClient
           }
           else 
           {
+              if (res.StatusCode == System.Net.HttpStatusCode.BadRequest)
+              {
+                  string errBody = await res.Content.ReadAsStringAsync();
+                  SyncLogger.Warning($"[{++count}/{vms.Count}] 400 BadRequest for {vm.Name}: {errBody}");
+                  continue;
+              }
               SyncLogger.Error($"[{++count}/{vms.Count}] {vm.Name} ... ОШИБКА: {res.StatusCode}");
           }
+      }
+      catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.BadRequest)
+      {
+          SyncLogger.Warning($"[{++count}/{vms.Count}] 400 BadRequest exception for VM {vm.Name}: {ex.Message}");
+          continue;
       }
       catch (Exception ex)
       {
@@ -123,7 +141,7 @@ public class NetBoxClient
       try
       {
           int interfaceId = 0;
-          var ifaceResp = await GetWithRetryAsync($"/virtualization/interfaces/?virtual_machine_id={vmId}");
+          var ifaceResp = await GetWithRetryAsync($"/virtualization/interfaces/?virtual_machine_id={vmId}&limit=0");
           if (ifaceResp.IsSuccessStatusCode)
           {
               var ifaceJson = await ifaceResp.Content.ReadFromJsonAsync<JsonElement>();
@@ -148,7 +166,7 @@ public class NetBoxClient
               string ipCidr = primaryIp.Contains("/") ? primaryIp : $"{primaryIp}/32";
               
               int ipId = 0;
-              var ipResp = await GetWithRetryAsync($"/ipam/ip-addresses/?address={ipCidr}");
+              var ipResp = await GetWithRetryAsync($"/ipam/ip-addresses/?address={ipCidr}&limit=0");
               if (ipResp.IsSuccessStatusCode)
               {
                   var ipJson = await ipResp.Content.ReadFromJsonAsync<JsonElement>();
@@ -205,7 +223,7 @@ public class NetBoxClient
           }
       }
 
-      var res = await GetWithRetryAsync($"/virtualization/clusters/?name={standaloneName}");
+      var res = await GetWithRetryAsync($"/virtualization/clusters/?name={standaloneName}&limit=0");
       if (res.IsSuccessStatusCode)
       {
           var json = await res.Content.ReadFromJsonAsync<JsonElement>();
@@ -242,7 +260,7 @@ public class NetBoxClient
 
   private async Task<Dictionary<string, int>> LoadVmCacheAsync()
   {
-    var cache = new Dictionary<string, int>();
+    var cache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     var res = await GetWithRetryAsync("/virtualization/virtual-machines/?limit=0");
     if (!res.IsSuccessStatusCode) return cache;
     var json = await res.Content.ReadFromJsonAsync<JsonElement>();
@@ -257,9 +275,18 @@ public class NetBoxClient
         {
           string name = nameProp.GetString() ?? "";
           name = DataNormalizer.NormalizeString(name);
+          
+          string clusterName = "";
+          if (item.TryGetProperty("cluster", out var clusterProp) && clusterProp.ValueKind == JsonValueKind.Object &&
+              clusterProp.TryGetProperty("name", out var cNameProp) && cNameProp.ValueKind == JsonValueKind.String)
+          {
+              clusterName = cNameProp.GetString() ?? "";
+          }
+
           if (!string.IsNullOrEmpty(name))
           {
-            cache[name] = idProp.GetInt32();
+            string key = $"{clusterName}::{name}";
+            cache[key] = idProp.GetInt32();
           }
         }
       }
@@ -298,7 +325,7 @@ public class NetBoxClient
       try
       {
           string encodedName = Uri.EscapeDataString(name);
-          var res = await GetWithRetryAsync($"/extras/tags/?name={encodedName}");
+          var res = await GetWithRetryAsync($"/extras/tags/?name={encodedName}&limit=0");
           if (res.IsSuccessStatusCode)
           {
               var json = await res.Content.ReadFromJsonAsync<JsonElement>();
