@@ -53,14 +53,14 @@ try
   calculator.Calculate(allVms);
 
   // 5. Отправка ВМ в NetBox (передаем hostMap)
-  var pveList = allVms.Where(v => v.Provider == "Proxmox").ToList();
+  var pveList = allVms.Where(v => string.Equals(v.Provider, "Proxmox", StringComparison.OrdinalIgnoreCase)).ToList();
   if (pveList.Any())
   {
     Console.WriteLine("\n--- Синхронизация Proxmox ---");
     await netbox.SyncVirtualMachinesAsync(pveList, ProxmoxClusterId, hostMap);
   }
 
-  var vmwareList = allVms.Where(v => v.Provider == "VMware").ToList();
+  var vmwareList = allVms.Where(v => string.Equals(v.Provider, "VMware", StringComparison.OrdinalIgnoreCase)).ToList();
   if (vmwareList.Any())
   {
     Console.WriteLine("\n--- Синхронизация VMware ---");

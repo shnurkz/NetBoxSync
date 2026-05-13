@@ -42,6 +42,17 @@ public class NetBoxClient
           string commentsMarkdown = MarkdownReportGenerator.Generate(vm);
           int resolvedClusterId = await ResolveClusterAsync(vm, clusterId);
 
+          var tagsToAssign = new List<string>();
+          if (!string.IsNullOrEmpty(vm.Tenant))
+          {
+              tagsToAssign.Add(DataNormalizer.NormalizeString(vm.Tenant));
+          }
+
+          foreach (var tagName in tagsToAssign)
+          {
+              await EnsureTagExistsAsync(tagName);
+          }
+
           string endpoint = "/virtualization/virtual-machines/";
           var payload = new Dictionary<string, object>
           {
@@ -62,17 +73,9 @@ public class NetBoxClient
 
           if (hostMap.TryGetValue(vm.NodeName, out int devId)) payload["device"] = devId;
           
-          if (!string.IsNullOrEmpty(vm.Tenant)) 
+          if (tagsToAssign.Count > 0)
           {
-              string normTenant = DataNormalizer.NormalizeString(vm.Tenant);
-              if (_tagSlugMap.ContainsKey(normTenant))
-              {
-                  payload["tags"] = new List<object> { new { name = normTenant } };
-              }
-              else
-              {
-                  SyncLogger.Warning($"Tag {normTenant} not found in NetBox, skipping tag for this VM");
-              }
+              payload["tags"] = tagsToAssign.Select(t => new { name = t }).ToList<object>();
           }
 
           HttpResponseMessage res;
@@ -290,6 +293,37 @@ public class NetBoxClient
       }
   }
 
+  public async Task EnsureTagExistsAsync(string name)
+  {
+      try
+      {
+          string encodedName = Uri.EscapeDataString(name);
+          var res = await GetWithRetryAsync($"/extras/tags/?name={encodedName}");
+          if (res.IsSuccessStatusCode)
+          {
+              var json = await res.Content.ReadFromJsonAsync<JsonElement>();
+              if (json.TryGetProperty("count", out var countProp) && countProp.GetInt32() > 0)
+              {
+                  return;
+              }
+          }
+
+          string slug = name.ToLowerInvariant().Replace(" ", "-");
+          slug = Regex.Replace(slug, @"[^a-z0-9\-]", "");
+
+          var payload = new Dictionary<string, string>
+          {
+              { "name", name },
+              { "slug", slug }
+          };
+
+          await PostWithRetryAsync("/extras/tags/", payload);
+      }
+      catch (Exception ex)
+      {
+          SyncLogger.Error($"[NetBoxClient] HTTP exception in EnsureTagExistsAsync for '{name}': {ex.Message}");
+      }
+  }
 
   public async Task<Dictionary<string, int>> EnsureDevicesExistAsync(List<HostAsset> h, int s, int r) => new();
   public async Task<Dictionary<string, CostCalculator.HostPricing>> GetHostPricingsAsync() => new();
